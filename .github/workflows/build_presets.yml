@@ -1,0 +1,68 @@
+name: build
+
+on:
+  workflow_dispatch:
+  push:
+    branches-ignore:
+      - dev
+  pull_request:
+    branches-ignore:
+      - dev
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        preset: [Release]
+    runs-on: ${{ matrix.os }}
+    container: devkitpro/devkita64:latest
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Update packages
+      run: |
+        sudo -n apt-get update
+        sudo -n apt-get upgrade -y texinfo
+
+    - name: Silence all git safe directory warnings
+      run: git config --system --add safe.directory '*'
+
+    - name: Checkout latest libnx commit
+      run: |
+        git clone --recurse-submodules https://github.com/switchbrew/libnx.git
+
+    - name: Checkout custom iosupport branch newlib commit
+      run: |
+        git clone https://github.com/R-YaTian/newlib.git -b iosupport
+
+    # fetch latest cmake
+    - uses: lukka/get-cmake@v4.4.2
+
+    - name: Set workspace permissions
+      run: chmod 777 -R "$GITHUB_WORKSPACE"
+
+    - name: Build libgloss
+      run: |
+        cd newlib
+        ./build-libgloss-local.sh
+
+    - name: Build and install libnx
+      run: |
+        cd libnx
+        make install -j$(nproc)
+
+    - name: Configure CMake
+      run: cmake --preset ${{ matrix.preset }}
+
+    - name: Build
+      run: cmake --build --preset ${{ matrix.preset }} --parallel $(nproc)
+
+    - name: Deploy
+      if: ${{ github.event_name != 'pull_request' && github.event.action != 'unassigned' }}
+      uses: actions/upload-artifact@master
+      with:
+        name: sphaira-${{ matrix.preset }}
+        path: build/${{ matrix.preset }}/sphaira.nro
