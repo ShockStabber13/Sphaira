@@ -92,7 +92,7 @@ bool fix_path(const char* str, char* out, bool strip_leading_slash = false);
 void update_devoptab_for_read_only(devoptab_t* devoptab, bool read_only);
 
 struct PushPullThreadData {
-    static constexpr size_t MAX_BUFFER_SIZE = 1024 * 64; // 64KB max buffer
+    static constexpr size_t MAX_BUFFER_SIZE = 1024 * 512; // 512 KiB HTTP transfer queue
 
     explicit PushPullThreadData(CURL* _curl, std::stop_token token = {});
     virtual ~PushPullThreadData();
@@ -106,6 +106,7 @@ struct PushPullThreadData {
     size_t PushData(const char* data, size_t total_size, bool curl = false);
 
     static size_t progress_callback(void *clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow);
+    static size_t response_header_callback(char* ptr, size_t size, size_t nmemb, void* userdata);
 
 private:
     static void thread_func(void* arg);
@@ -118,6 +119,13 @@ public:
     CondVar can_pull{};
 
     long code{};
+    CURLcode curl_result{CURLE_OK};
+    // Resumed GETs must return HTTP 206 with the correct Content-Range
+    // before any payload bytes are handed to the filesystem.
+    size_t expected_range_offset{};
+    bool require_partial_range{};
+    bool range_header_valid{};
+    bool rejected_response{};
     bool error{};
     bool finished{};
     bool started{};
