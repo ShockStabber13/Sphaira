@@ -2,6 +2,10 @@
 #include "ui/nvg_util.hpp"
 #include "app.hpp"
 #include "i18n.hpp"
+#include "utils/open_diagnostics.hpp"
+#include <cerrno>
+#include <cstring>
+#include <cstdio>
 
 namespace sphaira::ui {
 namespace {
@@ -211,6 +215,31 @@ ErrorBox::ErrorBox(const std::string& message) : m_message{message} {
 ErrorBox::ErrorBox(Result code, const std::string& message) : ErrorBox{message} {
     m_code = code;
     m_code_message = GetCodeMessage(code);
+    if (code == Result_FsStdioFailedToOpenFile) {
+        const int err = sphaira::open_diagnostics::file_errno.load();
+        char details[256]{};
+        if (sphaira::open_diagnostics::webdav_seen.load()) {
+            if (sphaira::open_diagnostics::range_seen.load()) {
+                std::snprintf(details, sizeof(details),
+                    "errno=%d (%s)  HEAD=%ld/curl%d  GET=%ld/curl%d",
+                    err, std::strerror(err),
+                    sphaira::open_diagnostics::head_http.load(),
+                    sphaira::open_diagnostics::head_curl.load(),
+                    sphaira::open_diagnostics::range_http.load(),
+                    sphaira::open_diagnostics::range_curl.load());
+            } else {
+                std::snprintf(details, sizeof(details),
+                    "errno=%d (%s)  HEAD=%ld/curl%d  GET=not tried",
+                    err, std::strerror(err),
+                    sphaira::open_diagnostics::head_http.load(),
+                    sphaira::open_diagnostics::head_curl.load());
+            }
+        } else {
+            std::snprintf(details, sizeof(details),
+                "errno=%d (%s)  WebDAV=not reached", err, std::strerror(err));
+        }
+        m_message = details;
+    }
     m_code_module = std::to_string(R_MODULE(code));
     if (auto str = GetModule(code)) {
         m_code_module += " (" + std::string(str) + ")";
