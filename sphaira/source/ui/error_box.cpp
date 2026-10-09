@@ -239,7 +239,9 @@ ErrorBox::ErrorBox(Result code, const std::string& message) : ErrorBox{message} 
                 "errno=%d (%s)  WebDAV=not reached", err, std::strerror(err));
         }
         char routing[96]{};
-        std::snprintf(routing, sizeof(routing), " [stage=%d pathlen=%d mountlen=%d]",
+        std::snprintf(routing, sizeof(routing), " [drv=%d flags=%d stage=%d pathlen=%d mountlen=%d]",
+            sphaira::open_diagnostics::driver.load(),
+            sphaira::open_diagnostics::open_flags.load(),
             sphaira::open_diagnostics::open_stage.load(),
             sphaira::open_diagnostics::path_length.load(),
             sphaira::open_diagnostics::mount_length.load());
