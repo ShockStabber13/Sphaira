@@ -245,7 +245,16 @@ ErrorBox::ErrorBox(Result code, const std::string& message) : ErrorBox{message} 
             sphaira::open_diagnostics::open_stage.load(),
             sphaira::open_diagnostics::path_length.load(),
             sphaira::open_diagnostics::mount_length.load());
-        m_message = std::string(details) + routing;
+        if (sphaira::open_diagnostics::driver.load() == sphaira::open_diagnostics::Http) {
+            char redirects[96]{};
+            std::snprintf(redirects, sizeof(redirects), " Redirects H:%ld G:%ld",
+                sphaira::open_diagnostics::head_redirects.load(),
+                sphaira::open_diagnostics::range_redirects.load());
+            m_message = std::string(details) + redirects + " Host:" +
+                sphaira::open_diagnostics::GetFinalHost();
+        } else {
+            m_message = std::string(details) + routing;
+        }
     }
     m_code_module = std::to_string(R_MODULE(code));
     if (auto str = GetModule(code)) {
