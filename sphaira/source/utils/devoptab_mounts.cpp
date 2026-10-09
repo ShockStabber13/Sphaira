@@ -1,6 +1,7 @@
 
 #include "utils/devoptab.hpp"
 #include "utils/devoptab_common.hpp"
+#include "utils/open_diagnostics.hpp"
 #include "defines.hpp"
 #include "log.hpp"
 #include "location.hpp"
@@ -78,6 +79,7 @@ auto FixPath(const char* path) -> std::pair<fs::FsPath, std::string_view> {
 }
 
 int Device::devoptab_open(void *fileStruct, const char *_path, int flags, int mode) {
+    sphaira::open_diagnostics::current.driver = sphaira::open_diagnostics::Mounts;
     auto file = static_cast<File*>(fileStruct);
 
     const auto [path, mount_name] = FixPath(_path);
