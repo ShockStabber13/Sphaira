@@ -6,7 +6,7 @@
 
 namespace sphaira::open_diagnostics {
 
-enum Driver : int { Unknown = 0, WebDav = 1, Mounts = 2 };
+enum Driver : int { Unknown = 0, WebDav = 1, Mounts = 2, Http = 3 };
 
 struct Attempt {
     int stage{};
