@@ -3,6 +3,7 @@
 
 #include "log.hpp"
 #include "defines.hpp"
+#include "utils/open_diagnostics.hpp"
 #include <fcntl.h>
 #include <curl/curl.h>
 
@@ -271,6 +272,8 @@ int Device::webdav_stat(const std::string& path, struct stat* st, bool is_dir) {
     curl_set_common_options(this->curl, url);
     curl_easy_setopt(this->curl, CURLOPT_NOBODY, 1L);
     curl_easy_setopt(this->curl, CURLOPT_FILETIME, 1L);
+    sphaira::open_diagnostics::Reset();
+    sphaira::open_diagnostics::webdav_seen.store(true);
     const auto head_rc = curl_easy_perform(this->curl);
 
     long status = 0;
@@ -280,6 +283,8 @@ int Device::webdav_stat(const std::string& path, struct stat* st, bool is_dir) {
     curl_off_t file_time = 0;
     curl_easy_getinfo(this->curl, CURLINFO_FILETIME_T, &file_time);
 
+    sphaira::open_diagnostics::head_http.store(status);
+    sphaira::open_diagnostics::head_curl.store(static_cast<int>(head_rc));
     const bool head_ok = head_rc == CURLE_OK && (status == 200 || status == 206);
     if (!is_dir && (!head_ok || length <= 0)) {
         log_write("[WEBDAV] HEAD unusable (curl=%d http=%ld size=%lld); probing range\\n",
@@ -292,8 +297,11 @@ int Device::webdav_stat(const std::string& path, struct stat* st, bool is_dir) {
         curl_easy_setopt(this->curl, CURLOPT_HEADERDATA, &probe);
         curl_easy_setopt(this->curl, CURLOPT_WRITEFUNCTION, size_probe_stop_body);
         curl_easy_setopt(this->curl, CURLOPT_WRITEDATA, nullptr);
+        sphaira::open_diagnostics::range_seen.store(true);
         const auto get_rc = curl_easy_perform(this->curl);
         curl_easy_getinfo(this->curl, CURLINFO_RESPONSE_CODE, &status);
+        sphaira::open_diagnostics::range_http.store(status);
+        sphaira::open_diagnostics::range_curl.store(static_cast<int>(get_rc));
         curl_off_t response_length = -1;
         curl_easy_getinfo(this->curl, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &response_length);
         length = status == 206 ? probe.total : status == 200 ? response_length : -1;
