@@ -1,17 +1,21 @@
 #!/bin/sh
 set -eu
 
-# Stop immediately if configure or build fails; never package stale artifacts.
-build_preset() {
-    echo "Configuring $1 ..."
-    cmake --preset "$1"
-    echo "Building $1 ..."
-    cmake --build --preset "$1"
-}
+# Reuse existing CMake configuration and built dependencies for quick edits.
+# CMake's build system automatically reconfigures if its build files change.
+cd "$(dirname "$0")"
 
-build_preset Release
+if [ ! -f build/Release/CMakeCache.txt ] || [ "${1:-}" = "--reconfigure" ]; then
+    echo "Configuring Release ..."
+    cmake --preset Release
+fi
 
+echo "Building Release (incremental) ..."
+cmake --build --preset Release
+
+# Package only if the build above succeeded.
 rm -rf out
 mkdir -p out/switch/sphaira
 cp build/Release/sphaira.nro out/switch/sphaira/sphaira.nro
-(cd out && zip -r9 sphaira.zip switch)
+(cd out && zip -q -r9 sphaira.zip switch)
+echo "Release ready: out/sphaira.zip"
