@@ -2,9 +2,11 @@
 #include "defines.hpp"
 #include "ui/nvg_util.hpp"
 #include "log.hpp"
+#include "utils/open_diagnostics.hpp"
 
 #include <switch.h>
 #include <cstdio>
+#include <cerrno>
 #include <cstring>
 #include <vector>
 #include <string_view>
@@ -489,7 +491,12 @@ Result OpenFile(fs::Fs* fs, const FsPathReal& path, u32 mode, File* f) {
             f->m_stdio = std::fopen(path, "rb+");
         }
 
-        R_UNLESS(f->m_stdio, Result_FsStdioFailedToOpenFile);
+        if (!f->m_stdio) {
+            const int err = errno;
+            sphaira::open_diagnostics::file_errno.store(err);
+            log_write("[FS] fopen failed, errno=%d (%s)\\n", err, std::strerror(err));
+            R_THROW(Result_FsStdioFailedToOpenFile);
+        }
 
         // disable buffering to match native fs behavior.
         // this also causes problems with network io as it will do double reads.
