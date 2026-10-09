@@ -449,32 +449,79 @@ int Device::devoptab_close(void *fd) {
 ssize_t Device::devoptab_read(void *fd, char *ptr, size_t len) {
     auto file = static_cast<File*>(fd);
     len = std::min(len, file->entry->st.st_size - file->off);
-
-    if (!len) {
-        return 0;
-    }
+    if (!len) return 0;
 
     if (file->off != file->last_off) {
-        log_write("[HTTP] File offset changed from %zu to %zu, resetting download thread\n", file->last_off, file->off);
-        file->last_off = file->off;
+        log_write("[HTTP] Seek from %zu to %zu: restarting stream\n",
+            file->last_off, file->off);
         delete file->push_pull_thread_data;
         file->push_pull_thread_data = nullptr;
+        file->last_off = file->off;
     }
 
-    if (!file->push_pull_thread_data) {
-        log_write("[HTTP] Creating download thread data for file: %s\n", file->entry->path.c_str());
-        file->push_pull_thread_data = CreatePushData(this->transfer_curl, file->entry->url, file->off);
+    // Complete each read or return an error. The installer cannot interpret
+    // a partial NCA read as success. Resume where the last stream stopped.
+    constexpr unsigned max_reconnects = 5;
+    constexpr s64 reconnect_delay_ns = 2'000'000'000LL;
+    size_t total = 0;
+    unsigned reconnects = 0;
+    while (total < len) {
         if (!file->push_pull_thread_data) {
-            log_write("[HTTP] Failed to create download thread data for file: %s\n", file->entry->path.c_str());
+            log_write("[HTTP] Starting stream at %zu (remaining %zu)\n",
+                file->off, len - total);
+            file->push_pull_thread_data =
+                CreatePushData(this->transfer_curl, file->entry->url, file->off);
+            if (!file->push_pull_thread_data) {
+                log_write("[HTTP] Failed to start stream at %zu\n", file->off);
+                return -EIO;
+            }
+        }
+
+        auto* transfer = file->push_pull_thread_data;
+        const size_t n = transfer->PullData(ptr + total, len - total);
+        total += n;
+        file->off += n;
+        file->last_off = file->off;
+        if (total == len) return total;
+
+        // The worker has finished (or failed): inspect its final result.
+        const long http_status = transfer->code;
+        const CURLcode curl_rc = transfer->curl_result;
+        const bool rejected = transfer->rejected_response;
+        delete file->push_pull_thread_data;
+        file->push_pull_thread_data = nullptr;
+
+        if (http_status == 401 || http_status == 403) {
+            log_write("[HTTP] Authentication failed or link expired: HTTP %ld\n", http_status);
+            return -EACCES;
+        }
+        if (http_status == 404) return -ENOENT;
+        if (rejected || (http_status != 0 && http_status != 200 && http_status != 206)) {
+            log_write("[HTTP] Invalid HTTP response: %ld, CURL %d, rejected %d\n",
+                http_status, static_cast<int>(curl_rc), static_cast<int>(rejected));
             return -EIO;
         }
+
+        const bool recoverable = curl_rc == CURLE_OK ||
+            curl_rc == CURLE_PARTIAL_FILE ||
+            curl_rc == CURLE_RECV_ERROR ||
+            curl_rc == CURLE_OPERATION_TIMEDOUT ||
+            curl_rc == CURLE_COULDNT_CONNECT ||
+            curl_rc == CURLE_SEND_ERROR ||
+            curl_rc == CURLE_GOT_NOTHING ||
+            curl_rc == CURLE_SSL_CONNECT_ERROR;
+        if (!recoverable || reconnects >= max_reconnects) {
+            log_write("[HTTP] Stream failed after %u retries at %zu: CURL %d, HTTP %ld\n",
+                reconnects, file->off, static_cast<int>(curl_rc), http_status);
+            return -EIO;
+        }
+        ++reconnects;
+        log_write("[HTTP] Reconnect at byte %zu, attempt %u/%u (CURL %d, HTTP %ld)\n",
+            file->off, reconnects, max_reconnects,
+            static_cast<int>(curl_rc), http_status);
+        svcSleepThread(reconnect_delay_ns);
     }
-
-    const auto ret = file->push_pull_thread_data->PullData(ptr, len);
-
-    file->off += ret;
-    file->last_off = file->off;
-    return ret;
+    return total;
 }
 
 ssize_t Device::devoptab_seek(void *fd, off_t pos, int dir) {
