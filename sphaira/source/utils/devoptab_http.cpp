@@ -14,6 +14,7 @@
 #include <vector>
 #include <memory>
 #include <cstring>
+#include <strings.h>
 #include <optional>
 #include <unordered_map>
 #include <cstdlib>
