@@ -8,6 +8,8 @@
 
 #include <cstring>
 #include <algorithm>
+#include <limits>
+#include <string_view>
 #include <fcntl.h>
 #include <minIni.h>
 #include <curl/curl.h>
@@ -1085,12 +1087,63 @@ size_t PushPullThreadData::PushData(const char* data, size_t total_size, bool cu
     }
 }
 
-size_t PushThreadData::push_thread_callback(const char *ptr, size_t size, size_t nmemb, void *userdata) {
-    if (!ptr || !userdata || !size || !nmemb) {
-        return 0;
+// Header state is updated by the same CURL worker that receives the body.
+// Redirects can contain interim HTTP status lines; reset on each response.
+size_t PushPullThreadData::response_header_callback(char* ptr, size_t size, size_t nmemb, void* userdata) {
+    if (!ptr || !userdata || (size && nmemb > SIZE_MAX / size)) return 0;
+    const size_t bytes = size * nmemb;
+    auto* data = static_cast<PushPullThreadData*>(userdata);
+    if (!data->require_partial_range) return bytes;
+
+    const std::string_view line{ptr, bytes};
+    if (line.starts_with("HTTP/")) {
+        data->range_header_valid = false;
+        return bytes;
     }
 
+    constexpr std::string_view header{"content-range:"};
+    if (line.size() < header.size()) return bytes;
+    for (size_t i = 0; i < header.size(); ++i) {
+        char c = line[i];
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+        if (c != header[i]) return bytes;
+    }
+
+    auto value = line.substr(header.size());
+    while (!value.empty() && (value.front() == ' ' || value.front() == '\t'))
+        value.remove_prefix(1);
+    if (!value.starts_with("bytes ")) return bytes;
+    value.remove_prefix(6);
+
+    // Verify the first byte of the returned part, preventing duplication or
+    // corruption when a CDN ignores Range or redirects to the wrong object.
+    size_t start = 0;
+    size_t digits = 0;
+    while (digits < value.size() && value[digits] >= '0' && value[digits] <= '9') {
+        const size_t digit = static_cast<size_t>(value[digits] - '0');
+        if (start > (std::numeric_limits<size_t>::max() - digit) / 10)
+            return bytes;
+        start = start * 10 + digit;
+        ++digits;
+    }
+    data->range_header_valid = digits > 0 && digits < value.size() &&
+        value[digits] == '-' && start == data->expected_range_offset;
+    return bytes;
+}
+
+size_t PushThreadData::push_thread_callback(const char *ptr, size_t size, size_t nmemb, void *userdata) {
+    if (!ptr || !userdata || !size || !nmemb) return 0;
     auto* data = static_cast<PushThreadData*>(userdata);
+
+    long status = 0;
+    curl_easy_getinfo(data->curl, CURLINFO_RESPONSE_CODE, &status);
+    if ((status != 200 && status != 206) ||
+        (data->require_partial_range &&
+         (status != 206 || !data->range_header_valid))) {
+        // Abort before invalid HTTP data reaches the installer.
+        data->rejected_response = true;
+        return 0;
+    }
     return data->PushData(ptr, size * nmemb, true);
 }
 
@@ -1169,6 +1222,7 @@ void PushPullThreadData::thread_func(void* arg) {
 
     data->finished = true;
     data->error = res != CURLE_OK;
+    data->curl_result = res;
     curl_easy_getinfo(data->curl, CURLINFO_RESPONSE_CODE, &data->code);
 
     log_write("[PUSH:PULL] Read thread finished, code: %ld, error: %d\n", data->code, data->error);
@@ -1329,8 +1383,25 @@ PushThreadData* MountCurlDevice::CreatePushData(CURL* curl, const std::string& u
     }
 
     curl_set_common_options(curl, url);
+    data->expected_range_offset = offset;
+    data->require_partial_range = offset > 0 &&
+        (url.starts_with("https://") || url.starts_with("http://"));
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, PushPullThreadData::response_header_callback);
+    curl_easy_setopt(curl, CURLOPT_HEADERDATA, data);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, PushThreadData::push_thread_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)data);
+
+    // A stalled connection must wake the reader so it can reconnect.
+    // Explicit mount timeouts are preserved, otherwise match YATI's
+    // 10-second connect / 15-second low-speed policy for HTTP streams.
+    if (url.starts_with("https://") || url.starts_with("http://")) {
+        curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 1024L * 256L);
+        if (config.timeout <= 0) {
+            curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 10000L);
+            curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
+            curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 15L);
+        }
+    }
 
     if (offset > 0) {
         char range[64];
