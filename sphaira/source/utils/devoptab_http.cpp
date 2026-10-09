@@ -14,6 +14,7 @@
 #include <vector>
 #include <memory>
 #include <cstring>
+#include <cstdio>
 #include <strings.h>
 #include <optional>
 #include <unordered_map>
@@ -58,6 +59,25 @@ size_t size_probe_header(char* ptr, size_t sz, size_t count, void* ctx) {
 }
 size_t size_probe_stop_body(char*, size_t, size_t, void*) {
     return 0; // Stop at first body byte; do not download the file during stat.
+}
+
+// Store only the hostname of the final redirect destination.
+void capture_final_hostname(CURL* handle, std::array<char, 96>& out) {
+    out.fill(0);
+    char* final_url = nullptr;
+    curl_easy_getinfo(handle, CURLINFO_EFFECTIVE_URL, &final_url);
+    if (!final_url) return;
+
+    CURLU* parts = curl_url();
+    if (!parts) return;
+    if (curl_url_set(parts, CURLUPART_URL, final_url, 0) == CURLUE_OK) {
+        char* host = nullptr;
+        if (curl_url_get(parts, CURLUPART_HOST, &host, 0) == CURLUE_OK && host) {
+            std::snprintf(out.data(), out.size(), "%s", host);
+        }
+        curl_free(host);
+    }
+    curl_url_cleanup(parts);
 }
 
 struct FileEntry {
@@ -304,6 +324,8 @@ int Device::http_stat(const std::string& path, struct stat* st, bool is_dir) {
     curl_easy_getinfo(this->curl, CURLINFO_RESPONSE_CODE, &response_code);
     diag.head_http = response_code;
     diag.head_curl = static_cast<int>(head_rc);
+    curl_easy_getinfo(this->curl, CURLINFO_REDIRECT_COUNT, &diag.head_redirects);
+    capture_final_hostname(this->curl, diag.final_host);
 
     curl_off_t file_size = -1;
     curl_easy_getinfo(this->curl, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &file_size);
@@ -335,6 +357,8 @@ int Device::http_stat(const std::string& path, struct stat* st, bool is_dir) {
         curl_easy_getinfo(this->curl, CURLINFO_RESPONSE_CODE, &get_status);
         diag.range_http = get_status;
         diag.range_curl = static_cast<int>(get_rc);
+        curl_easy_getinfo(this->curl, CURLINFO_REDIRECT_COUNT, &diag.range_redirects);
+        capture_final_hostname(this->curl, diag.final_host);
         curl_off_t get_length = -1;
         curl_easy_getinfo(this->curl, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &get_length);
         const curl_off_t total = get_status == 206 ? probe.total : get_status == 200 ? get_length : -1;
