@@ -1393,15 +1393,27 @@ Result Yati::RegisterNcasAndPushRecord(const CnmtCollection& cnmt, u32 latest_ve
     content_storage_record.key = cnmt.key;
     content_storage_record.storage_id = storage_id;
     pbox->NewTransfer("Pushing application record"_i18n);
+    log_write("[YATI] PushApplicationRecord enter, app=%016llX\n", (unsigned long long)app_id);
+    const auto push_rc = ns::PushApplicationRecord(app_id, std::addressof(content_storage_record), 1);
+    log_write("[YATI] PushApplicationRecord returned: 0x%08X\n", (unsigned int)push_rc);
+    R_TRY(push_rc);
 
-    R_TRY(ns::PushApplicationRecord(app_id, std::addressof(content_storage_record), 1));
     if (hosversionAtLeast(6,0,0)) {
-        R_TRY(avmInitialize());
+        pbox->NewTransfer("Initializing launch version"_i18n);
+        log_write("[YATI] avmInitialize enter\n");
+        const auto init_rc = avmInitialize();
+        log_write("[YATI] avmInitialize returned: 0x%08X\n", (unsigned int)init_rc);
+        R_TRY(init_rc);
         ON_SCOPE_EXIT(avmExit());
 
-        R_TRY(avmPushLaunchVersion(app_id, latest_version_num));
+        pbox->NewTransfer("Updating launch version"_i18n);
+        log_write("[YATI] avmPushLaunchVersion enter\n");
+        const auto version_rc = avmPushLaunchVersion(app_id, latest_version_num);
+        log_write("[YATI] avmPushLaunchVersion returned: 0x%08X\n", (unsigned int)version_rc);
+        R_TRY(version_rc);
     }
-    log_write("pushed\n");
+    pbox->NewTransfer("Application record complete"_i18n);
+    log_write("[YATI] application record complete\n");
 
     R_SUCCEED();
 }
