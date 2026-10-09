@@ -123,6 +123,7 @@ public:
     // Resumed GETs must return HTTP 206 with the correct Content-Range
     // before any payload bytes are handed to the filesystem.
     size_t expected_range_offset{};
+    bool require_http_status{};
     bool require_partial_range{};
     bool range_header_valid{};
     bool rejected_response{};

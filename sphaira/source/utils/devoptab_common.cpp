@@ -1135,14 +1135,16 @@ size_t PushThreadData::push_thread_callback(const char *ptr, size_t size, size_t
     if (!ptr || !userdata || !size || !nmemb) return 0;
     auto* data = static_cast<PushThreadData*>(userdata);
 
-    long status = 0;
-    curl_easy_getinfo(data->curl, CURLINFO_RESPONSE_CODE, &status);
-    if ((status != 200 && status != 206) ||
-        (data->require_partial_range &&
-         (status != 206 || !data->range_header_valid))) {
-        // Abort before invalid HTTP data reaches the installer.
-        data->rejected_response = true;
-        return 0;
+    if (data->require_http_status) {
+        long status = 0;
+        curl_easy_getinfo(data->curl, CURLINFO_RESPONSE_CODE, &status);
+        if ((status != 200 && status != 206) ||
+            (data->require_partial_range &&
+             (status != 206 || !data->range_header_valid))) {
+            // Abort before invalid HTTP data reaches the installer.
+            data->rejected_response = true;
+            return 0;
+        }
     }
     return data->PushData(ptr, size * nmemb, true);
 }
@@ -1384,8 +1386,9 @@ PushThreadData* MountCurlDevice::CreatePushData(CURL* curl, const std::string& u
 
     curl_set_common_options(curl, url);
     data->expected_range_offset = offset;
-    data->require_partial_range = offset > 0 &&
-        (url.starts_with("https://") || url.starts_with("http://"));
+    data->require_http_status =
+        url.starts_with("https://") || url.starts_with("http://");
+    data->require_partial_range = offset > 0 && data->require_http_status;
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, PushPullThreadData::response_header_callback);
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, data);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, PushThreadData::push_thread_callback);
