@@ -482,9 +482,9 @@ Result OpenFile(fs::Fs* fs, const FsPathReal& path, u32 mode, File* f) {
         R_TRY(fsFsOpenFile(&fs->m_fs, path, mode, &f->m_native));
     } else {
         sphaira::open_diagnostics::Reset();
-        sphaira::open_diagnostics::path_length.store(static_cast<int>(std::strlen(path.s)));
+        sphaira::open_diagnostics::current.path_length = static_cast<int>(std::strlen(path.s));
         const char* colon = std::strchr(path.s, ':');
-        sphaira::open_diagnostics::mount_length.store(colon ? static_cast<int>(colon - path.s) : -1);
+        sphaira::open_diagnostics::current.mount_length = colon ? static_cast<int>(colon - path.s) : -1;
         if ((mode & FsOpenMode_Read) && (mode & FsOpenMode_Write)) {
             f->m_stdio = std::fopen(path, "rb+");
         } else if (mode & FsOpenMode_Read) {
@@ -497,7 +497,7 @@ Result OpenFile(fs::Fs* fs, const FsPathReal& path, u32 mode, File* f) {
 
         if (!f->m_stdio) {
             const int err = errno;
-            sphaira::open_diagnostics::file_errno.store(err);
+            sphaira::open_diagnostics::CaptureFailure(err);
             log_write("[FS] fopen failed, errno=%d (%s)\\n", err, std::strerror(err));
             R_THROW(Result_FsStdioFailedToOpenFile);
         }
