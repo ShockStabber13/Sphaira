@@ -481,6 +481,10 @@ Result OpenFile(fs::Fs* fs, const FsPathReal& path, u32 mode, File* f) {
         auto fs = (fs::FsNative*)f->m_fs;
         R_TRY(fsFsOpenFile(&fs->m_fs, path, mode, &f->m_native));
     } else {
+        sphaira::open_diagnostics::Reset();
+        sphaira::open_diagnostics::path_length.store(static_cast<int>(std::strlen(path.s)));
+        const char* colon = std::strchr(path.s, ':');
+        sphaira::open_diagnostics::mount_length.store(colon ? static_cast<int>(colon - path.s) : -1);
         if ((mode & FsOpenMode_Read) && (mode & FsOpenMode_Write)) {
             f->m_stdio = std::fopen(path, "rb+");
         } else if (mode & FsOpenMode_Read) {
