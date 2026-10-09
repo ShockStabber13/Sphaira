@@ -1,4 +1,5 @@
 #include "utils/devoptab_common.hpp"
+#include "utils/open_diagnostics.hpp"
 #include "utils/thread.hpp"
 
 #include "defines.hpp"
@@ -67,6 +68,7 @@ int set_errno(struct _reent *r, int err) {
 }
 
 int devoptab_open(struct _reent *r, void *fileStruct, const char *_path, int flags, int mode) {
+    sphaira::open_diagnostics::open_stage.store(1);
     auto device = static_cast<Device*>(r->deviceData);
     auto file = static_cast<File*>(fileStruct);
     std::memset(file, 0, sizeof(*file));
@@ -82,15 +84,18 @@ int devoptab_open(struct _reent *r, void *fileStruct, const char *_path, int fla
         return set_errno(r, ENOENT);
     }
 
+    sphaira::open_diagnostics::open_stage.store(2);
     if (!device->mount_device->Mount()) {
         return set_errno(r, EIO);
     }
 
+    sphaira::open_diagnostics::open_stage.store(3);
     file->fd = calloc(1, device->file_size);
     if (!file->fd) {
         return set_errno(r, ENOMEM);
     }
 
+    sphaira::open_diagnostics::open_stage.store(4);
     const auto ret = device->mount_device->devoptab_open(file->fd, path, flags, mode);
     if (ret) {
         free(file->fd);
@@ -98,6 +103,7 @@ int devoptab_open(struct _reent *r, void *fileStruct, const char *_path, int fla
         return set_errno(r, -ret);
     }
 
+    sphaira::open_diagnostics::open_stage.store(6);
     file->device = device;
     return r->_errno = 0;
 }
