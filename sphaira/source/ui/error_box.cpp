@@ -1,4 +1,5 @@
 #include "ui/error_box.hpp"
+#include <string_view>
 #include "ui/nvg_util.hpp"
 #include "app.hpp"
 #include "i18n.hpp"
@@ -246,12 +247,20 @@ ErrorBox::ErrorBox(Result code, const std::string& message) : ErrorBox{message} 
             sphaira::open_diagnostics::path_length.load(),
             sphaira::open_diagnostics::mount_length.load());
         if (sphaira::open_diagnostics::driver.load() == sphaira::open_diagnostics::Http) {
-            char redirects[96]{};
-            std::snprintf(redirects, sizeof(redirects), " Redirects H:%ld G:%ld",
+            char status[96]{}, redirects[96]{}, error[64]{};
+            std::snprintf(error, sizeof(error), "HTTP open failed: errno=%d", err);
+            std::snprintf(status, sizeof(status), "HEAD %ld/curl%d  GET %ld/curl%d",
+                sphaira::open_diagnostics::head_http.load(),
+                sphaira::open_diagnostics::head_curl.load(),
+                sphaira::open_diagnostics::range_http.load(),
+                sphaira::open_diagnostics::range_curl.load());
+            std::snprintf(redirects, sizeof(redirects), "Redirects: HEAD %ld  GET %ld",
                 sphaira::open_diagnostics::head_redirects.load(),
                 sphaira::open_diagnostics::range_redirects.load());
-            m_message = std::string(details) + redirects + " Host:" +
-                sphaira::open_diagnostics::GetFinalHost();
+            auto host = sphaira::open_diagnostics::GetFinalHost();
+            if (host.empty()) host = "(unknown)";
+            m_message = std::string(error) + "\n" + status + "\n" + redirects +
+                "\nFinal host: " + host.substr(0, 56);
         } else {
             m_message = std::string(details) + routing;
         }
@@ -285,9 +294,23 @@ auto ErrorBox::Draw(NVGcontext* vg, Theme* theme) -> void {
     } else {
         gfx::drawTextArgs(vg, center_x, 270, 25, NVG_ALIGN_CENTER | NVG_ALIGN_TOP, theme->GetColour(ThemeEntryID_TEXT), "An error occurred"_i18n.c_str());
     }
-    gfx::drawTextArgs(vg, center_x, 325, 23, NVG_ALIGN_CENTER | NVG_ALIGN_TOP, theme->GetColour(ThemeEntryID_TEXT), "%s", m_message.c_str());
-    gfx::drawTextArgs(vg, center_x, 380, 20, NVG_ALIGN_CENTER | NVG_ALIGN_TOP, theme->GetColour(ThemeEntryID_TEXT_INFO), "If this message appears repeatedly, please open an issue."_i18n.c_str());
-    gfx::drawTextArgs(vg, center_x, 415, 20, NVG_ALIGN_CENTER | NVG_ALIGN_TOP, theme->GetColour(ThemeEntryID_TEXT_INFO), "https://github.com/ITotalJustice/sphaira/issues");
+    if (m_message.find('\n') != std::string::npos) {
+        // Four centered lines; leave the button at y=470 unobstructed.
+        std::string_view remaining{m_message};
+        for (int row = 0; row < 4 && !remaining.empty(); ++row) {
+            const auto split = remaining.find('\n');
+            const auto line = remaining.substr(0, split);
+            gfx::drawTextArgs(vg, center_x, 310 + row * 32, 20,
+                NVG_ALIGN_CENTER | NVG_ALIGN_TOP, theme->GetColour(ThemeEntryID_TEXT),
+                "%.*s", static_cast<int>(line.size()), line.data());
+            if (split == std::string_view::npos) break;
+            remaining.remove_prefix(split + 1);
+        }
+    } else {
+        gfx::drawTextArgs(vg, center_x, 325, 23, NVG_ALIGN_CENTER | NVG_ALIGN_TOP, theme->GetColour(ThemeEntryID_TEXT), "%s", m_message.c_str());
+        gfx::drawTextArgs(vg, center_x, 380, 20, NVG_ALIGN_CENTER | NVG_ALIGN_TOP, theme->GetColour(ThemeEntryID_TEXT_INFO), "If this message appears repeatedly, please open an issue."_i18n.c_str());
+        gfx::drawTextArgs(vg, center_x, 415, 20, NVG_ALIGN_CENTER | NVG_ALIGN_TOP, theme->GetColour(ThemeEntryID_TEXT_INFO), "https://github.com/ITotalJustice/sphaira/issues");
+    }
     gfx::drawRectOutline(vg, theme, 4.f, box);
     gfx::drawTextArgs(vg, center_x, box.y + box.h/2, 23, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE, theme->GetColour(ThemeEntryID_TEXT_SELECTED), "OK"_i18n.c_str());
 }
