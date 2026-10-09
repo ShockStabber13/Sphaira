@@ -272,7 +272,7 @@ int Device::webdav_stat(const std::string& path, struct stat* st, bool is_dir) {
     curl_set_common_options(this->curl, url);
     curl_easy_setopt(this->curl, CURLOPT_NOBODY, 1L);
     curl_easy_setopt(this->curl, CURLOPT_FILETIME, 1L);
-    sphaira::open_diagnostics::Reset();
+    sphaira::open_diagnostics::open_stage.store(5);
     sphaira::open_diagnostics::webdav_seen.store(true);
     const auto head_rc = curl_easy_perform(this->curl);
 
