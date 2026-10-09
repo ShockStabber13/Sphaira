@@ -126,7 +126,9 @@ private:
 };
 
 int Device::http_dirlist(const std::string& path, DirEntries& out) {
-    const auto url = build_url(path, true);
+    // A listed directory may point to a redirect or a query-based URL.
+    // Reconstructing it from the displayed name drops that information.
+    const auto url = resolve_link(path, true);
     std::vector<char> chunk;
 
     log_write("[HTTP] Listing URL: %s path: %s\n", url.c_str(), path.c_str());
@@ -143,6 +145,12 @@ int Device::http_dirlist(const std::string& path, DirEntries& out) {
 
     long response_code = 0;
     curl_easy_getinfo(this->curl, CURLINFO_RESPONSE_CODE, &response_code);
+
+    // Relative hrefs in the received HTML are relative to the final page URL
+    // after redirects, not necessarily the initial directory URL.
+    const char* effective_url = nullptr;
+    curl_easy_getinfo(this->curl, CURLINFO_EFFECTIVE_URL, &effective_url);
+    const std::string listing_url = effective_url ? effective_url : url;
 
     switch (response_code) {
         case 200: // OK
@@ -259,14 +267,14 @@ int Device::http_dirlist(const std::string& path, DirEntries& out) {
             if (!raw_href.starts_with("//")) {
                 CURLU* link = curl_url();
                 if (link) {
-                    if (curl_url_set(link, CURLUPART_URL, url.c_str(), 0) == CURLUE_OK &&
+                    if (curl_url_set(link, CURLUPART_URL, listing_url.c_str(), 0) == CURLUE_OK &&
                         curl_url_set(link, CURLUPART_URL, raw_href.c_str(), 0) == CURLUE_OK) {
                         char *resolved{}, *original_host{}, *resolved_host{}, *original_scheme{}, *resolved_scheme{};
                         curl_url_get(link, CURLUPART_HOST, &resolved_host, 0);
                         curl_url_get(link, CURLUPART_SCHEME, &resolved_scheme, 0);
                         CURLU* base = curl_url();
                         if (base) {
-                            if (curl_url_set(base, CURLUPART_URL, url.c_str(), 0) == CURLUE_OK) {
+                            if (curl_url_set(base, CURLUPART_URL, listing_url.c_str(), 0) == CURLUE_OK) {
                                 curl_url_get(base, CURLUPART_HOST, &original_host, 0);
                                 curl_url_get(base, CURLUPART_SCHEME, &original_scheme, 0);
                             }
