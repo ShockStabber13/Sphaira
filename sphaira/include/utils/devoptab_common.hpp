@@ -92,7 +92,7 @@ bool fix_path(const char* str, char* out, bool strip_leading_slash = false);
 void update_devoptab_for_read_only(devoptab_t* devoptab, bool read_only);
 
 struct PushPullThreadData {
-    static constexpr size_t MAX_BUFFER_SIZE = 1024 * 512; // 512 KiB HTTP transfer queue
+    static constexpr size_t MAX_BUFFER_SIZE = 1024 * 64; // default for non-HTTP mounts
 
     explicit PushPullThreadData(CURL* _curl, std::stop_token token = {});
     virtual ~PushPullThreadData();
@@ -114,6 +114,7 @@ private:
 public:
     CURL* const curl{};
     std::vector<char> buffer{};
+    size_t buffer_limit{MAX_BUFFER_SIZE};
     Mutex mutex{};
     CondVar can_push{};
     CondVar can_pull{};

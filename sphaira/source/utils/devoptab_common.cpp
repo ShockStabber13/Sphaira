@@ -1058,7 +1058,7 @@ size_t PushPullThreadData::PushData(const char* data, size_t total_size, bool cu
     if (curl) {
         // this should be handled in the progress function.
         // however i handle it here as well just in case.
-        if (buffer.size() + total_size > MAX_BUFFER_SIZE) {
+        if (buffer.size() + total_size > buffer_limit) {
             return CURL_WRITEFUNC_PAUSE;
         }
 
@@ -1071,7 +1071,7 @@ size_t PushPullThreadData::PushData(const char* data, size_t total_size, bool cu
         // if we are not in a curl callback, then we can block until we have space.
         size_t bytes_written = 0;
         while (bytes_written < total_size && !error && !finished) {
-            const size_t space_left = MAX_BUFFER_SIZE - buffer.size();
+            const size_t space_left = buffer_limit - buffer.size();
             if (space_left == 0) {
                 condvarWakeOne(&can_pull);
                 condvarWait(&can_push, &mutex);
@@ -1188,7 +1188,7 @@ size_t PushPullThreadData::progress_callback(void *clientp, curl_off_t dltotal, 
             }
 
             // pause if the buffer is full, otherwise continue.
-            should_pause = data->buffer.size() >= MAX_BUFFER_SIZE;
+            should_pause = data->buffer.size() >= data->buffer_limit;
         } else {
             // pause if we have no data to send, otherwise continue.
             // do not pause if finished as curl may have internal data pending to send.
@@ -1397,7 +1397,8 @@ PushThreadData* MountCurlDevice::CreatePushData(CURL* curl, const std::string& u
     // A stalled connection must wake the reader so it can reconnect.
     // Explicit mount timeouts are preserved, otherwise match YATI's
     // 10-second connect / 15-second low-speed policy for HTTP streams.
-    if (url.starts_with("https://") || url.starts_with("http://")) {
+    if (data->require_http_status) {
+        data->buffer_limit = 1024 * 512;
         curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 1024L * 256L);
         if (config.timeout <= 0) {
             curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 10000L);
