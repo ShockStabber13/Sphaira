@@ -15,6 +15,7 @@
 #include <memory>
 #include <cstring>
 #include <optional>
+#include <unordered_map>
 #include <cstdlib>
 #include <limits>
 #include <string_view>
@@ -61,6 +62,7 @@ size_t size_probe_stop_body(char*, size_t, size_t, void*) {
 struct FileEntry {
     std::string path{};
     struct stat st{};
+    std::string url{};
 };
 
 struct File {
@@ -93,6 +95,10 @@ private:
 
     int http_dirlist(const std::string& path, DirEntries& out);
     int http_stat(const std::string& path, struct stat* st, bool is_dir);
+    std::string resolve_link(const std::string& path, bool is_dir);
+
+    // Maps synthetic file-browser paths to the exact HTTP links in directory listings.
+    std::unordered_map<std::string, std::string> m_link_urls{};
 
 private:
     bool mounted{};
@@ -198,7 +204,10 @@ int Device::http_dirlist(const std::string& path, DirEntries& out) {
             }
 
             pos = name_end + anchor_tag_end.length();
-            auto href = url_decode(std::string{table_view.substr(href_begin, href_name_end - href_begin)});
+            // Keep href's original percent encoding/query; the visible browser name
+            // remains decoded, but GET/HEAD must use the exact advertised link.
+            const auto raw_href = html_decode(table_view.substr(href_begin, href_name_end - href_begin));
+            auto href = url_decode(raw_href);
             auto name = url_decode(std::string{table_view.substr(name_begin, name_end - name_begin)});
 
             // skip empty names/links, root dir entry and links that are not actual files/dirs (e.g. sorting/filter controls).
@@ -216,6 +225,47 @@ int Device::http_dirlist(const std::string& path, DirEntries& out) {
                 href.pop_back(); // remove the trailing '/'
             }
 
+            // The browser treats href as an entry name and appends it to the
+            // current directory path. Use that same synthetic path as a lookup key.
+            std::string entry_path = path;
+            if (entry_path.empty() || !entry_path.ends_with('/')) entry_path += '/';
+            std::string_view relative = href;
+            while (!relative.empty() && relative.front() == '/') relative.remove_prefix(1);
+            entry_path += relative;
+
+            // Resolve links relative to the actual listing URL, not the mount root.
+            // Only accept same-origin links; do not send mount credentials off-site.
+            if (!raw_href.starts_with("//")) {
+                CURLU* link = curl_url();
+                if (link) {
+                    if (curl_url_set(link, CURLUPART_URL, url.c_str(), 0) == CURLUE_OK &&
+                        curl_url_set(link, CURLUPART_URL, raw_href.c_str(), 0) == CURLUE_OK) {
+                        char *resolved{}, *original_host{}, *resolved_host{}, *original_scheme{}, *resolved_scheme{};
+                        curl_url_get(link, CURLUPART_HOST, &resolved_host, 0);
+                        curl_url_get(link, CURLUPART_SCHEME, &resolved_scheme, 0);
+                        CURLU* base = curl_url();
+                        if (base) {
+                            if (curl_url_set(base, CURLUPART_URL, url.c_str(), 0) == CURLUE_OK) {
+                                curl_url_get(base, CURLUPART_HOST, &original_host, 0);
+                                curl_url_get(base, CURLUPART_SCHEME, &original_scheme, 0);
+                            }
+                            curl_url_cleanup(base);
+                        }
+                        if (original_host && resolved_host && original_scheme && resolved_scheme &&
+                            !strcasecmp(original_host, resolved_host) &&
+                            !strcasecmp(original_scheme, resolved_scheme) &&
+                            curl_url_get(link, CURLUPART_URL, &resolved, 0) == CURLUE_OK && resolved) {
+                            m_link_urls.insert_or_assign(entry_path, resolved);
+                        }
+                        curl_free(resolved);
+                        curl_free(original_host);
+                        curl_free(resolved_host);
+                        curl_free(original_scheme);
+                        curl_free(resolved_scheme);
+                    }
+                    curl_url_cleanup(link);
+                }
+            }
             out.emplace_back(name, href, is_dir);
         }
     }
@@ -225,9 +275,16 @@ int Device::http_dirlist(const std::string& path, DirEntries& out) {
     return 0;
 }
 
+std::string Device::resolve_link(const std::string& path, bool is_dir) {
+    if (const auto it = m_link_urls.find(path); it != m_link_urls.end()) {
+        return it->second;
+    }
+    return build_url(path, is_dir);
+}
+
 int Device::http_stat(const std::string& path, struct stat* st, bool is_dir) {
     std::memset(st, 0, sizeof(*st));
-    const auto url = build_url(path, is_dir);
+    const auto url = resolve_link(path, is_dir);
 
     auto& diag = sphaira::open_diagnostics::current;
     diag.driver = sphaira::open_diagnostics::Http;
@@ -344,7 +401,7 @@ int Device::devoptab_open(void *fileStruct, const char *path, int flags, int mod
         return -EISDIR;
     }
 
-    file->entry = new FileEntry{path, st};
+    file->entry = new FileEntry{path, st, resolve_link(path, false)};
     return 0;
 }
 
@@ -373,7 +430,7 @@ ssize_t Device::devoptab_read(void *fd, char *ptr, size_t len) {
 
     if (!file->push_pull_thread_data) {
         log_write("[HTTP] Creating download thread data for file: %s\n", file->entry->path.c_str());
-        file->push_pull_thread_data = CreatePushData(this->transfer_curl, build_url(file->entry->path, false), file->off);
+        file->push_pull_thread_data = CreatePushData(this->transfer_curl, file->entry->url, file->off);
         if (!file->push_pull_thread_data) {
             log_write("[HTTP] Failed to create download thread data for file: %s\n", file->entry->path.c_str());
             return -EIO;
