@@ -4,6 +4,7 @@
 #include "location.hpp"
 #include "log.hpp"
 #include "defines.hpp"
+#include "utils/open_diagnostics.hpp"
 #include <sys/iosupport.h>
 #include <fcntl.h>
 #include <curl/curl.h>
@@ -14,6 +15,9 @@
 #include <memory>
 #include <cstring>
 #include <optional>
+#include <cstdlib>
+#include <limits>
+#include <string_view>
 #include <sys/stat.h>
 
 namespace sphaira::devoptab {
@@ -27,6 +31,32 @@ struct DirEntry {
     bool is_dir{};
 };
 using DirEntries = std::vector<DirEntry>;
+
+// Metadata-only range probe used when servers reject HEAD.
+struct SizeProbe { curl_off_t total{-1}; };
+size_t size_probe_header(char* ptr, size_t sz, size_t count, void* ctx) {
+    const std::string_view line{ptr, sz * count};
+    constexpr std::string_view key{"content-range:"};
+    if (line.size() < key.size()) return sz * count;
+    for (size_t i = 0; i < key.size(); ++i) {
+        char c = line[i];
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+        if (c != key[i]) return sz * count;
+    }
+    const auto slash = line.find('/');
+    if (slash == std::string_view::npos) return sz * count;
+    const std::string number{line.substr(slash + 1)};
+    char* end = nullptr;
+    const auto n = std::strtoull(number.c_str(), &end, 10);
+    if (end != number.c_str() && n > 0 &&
+        n <= static_cast<unsigned long long>(std::numeric_limits<curl_off_t>::max())) {
+        static_cast<SizeProbe*>(ctx)->total = static_cast<curl_off_t>(n);
+    }
+    return sz * count;
+}
+size_t size_probe_stop_body(char*, size_t, size_t, void*) {
+    return 0; // Stop at first body byte; do not download the file during stat.
+}
 
 struct FileEntry {
     std::string path{};
@@ -199,72 +229,88 @@ int Device::http_stat(const std::string& path, struct stat* st, bool is_dir) {
     std::memset(st, 0, sizeof(*st));
     const auto url = build_url(path, is_dir);
 
+    auto& diag = sphaira::open_diagnostics::current;
+    diag.driver = sphaira::open_diagnostics::Http;
+    diag.stage = 5;
+    diag.webdav_seen = true; // Shared display field indicates HTTP metadata was attempted.
+    diag.range_seen = false;
+    diag.head_http = diag.range_http = 0;
+    diag.head_curl = diag.range_curl = 0;
+
     curl_set_common_options(this->curl, url);
     curl_easy_setopt(this->curl, CURLOPT_NOBODY, 1L);
     curl_easy_setopt(this->curl, CURLOPT_FILETIME, 1L);
 
-    const auto res = curl_easy_perform(this->curl);
-    if (res != CURLE_OK) {
-        log_write("[HTTP] curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
-        return -EIO;
-    }
-
+    const auto head_rc = curl_easy_perform(this->curl);
     long response_code = 0;
     curl_easy_getinfo(this->curl, CURLINFO_RESPONSE_CODE, &response_code);
+    diag.head_http = response_code;
+    diag.head_curl = static_cast<int>(head_rc);
 
-    curl_off_t file_size = 0;
+    curl_off_t file_size = -1;
     curl_easy_getinfo(this->curl, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &file_size);
-
     curl_off_t file_time = 0;
     curl_easy_getinfo(this->curl, CURLINFO_FILETIME_T, &file_time);
 
     const char* content_type{};
     curl_easy_getinfo(this->curl, CURLINFO_CONTENT_TYPE, &content_type);
-
     const char* effective_url{};
     curl_easy_getinfo(this->curl, CURLINFO_EFFECTIVE_URL, &effective_url);
+    bool looks_like_dir = is_dir;
+    if (effective_url && std::string_view{effective_url}.ends_with('/')) looks_like_dir = true;
+    if (content_type && std::string_view{content_type}.starts_with("text/html")) looks_like_dir = true;
 
-    switch (response_code) {
-        case 200: // OK
-        case 206: // Partial Content
-            break;
-        case 301: // Moved Permanently
-        case 302: // Found
-        case 303: // See Other
-        case 307: // Temporary Redirect
-        case 308: // Permanent Redirect
-            return -EIO;
-        case 401: // Unauthorized
-        case 403: // Forbidden
-            return -EACCES;
-        case 404: // Not Found
-            return -ENOENT;
-        default:
-            return -EIO;
-    }
+    const bool head_ok = head_rc == CURLE_OK && (response_code == 200 || response_code == 206);
+    if (!is_dir && (!head_ok || (file_size <= 0 && !looks_like_dir))) {
+        log_write("[HTTP] HEAD unusable (curl=%d http=%ld size=%lld), testing GET range\\n",
+            static_cast<int>(head_rc), response_code, static_cast<long long>(file_size));
 
-    if (effective_url) {
-        if (std::string_view{effective_url}.ends_with('/')) {
-            is_dir = true;
+        SizeProbe probe{};
+        curl_set_common_options(this->curl, url);
+        curl_easy_setopt(this->curl, CURLOPT_RANGE, "0-0");
+        curl_easy_setopt(this->curl, CURLOPT_HEADERFUNCTION, size_probe_header);
+        curl_easy_setopt(this->curl, CURLOPT_HEADERDATA, &probe);
+        curl_easy_setopt(this->curl, CURLOPT_WRITEFUNCTION, size_probe_stop_body);
+        diag.range_seen = true;
+        const auto get_rc = curl_easy_perform(this->curl);
+        long get_status = 0;
+        curl_easy_getinfo(this->curl, CURLINFO_RESPONSE_CODE, &get_status);
+        diag.range_http = get_status;
+        diag.range_curl = static_cast<int>(get_rc);
+        curl_off_t get_length = -1;
+        curl_easy_getinfo(this->curl, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &get_length);
+        const curl_off_t total = get_status == 206 ? probe.total : get_status == 200 ? get_length : -1;
+
+        // A deliberate callback abort is expected when the server sends file data.
+        if ((get_rc == CURLE_OK || get_rc == CURLE_WRITE_ERROR) &&
+            (get_status == 200 || get_status == 206) && total > 0) {
+            st->st_mode = S_IFREG | S_IRUSR | S_IRGRP | S_IROTH;
+            st->st_size = total;
+            st->st_nlink = 1;
+            return 0;
         }
+
+        if (get_status == 401 || get_status == 403) return -EACCES;
+        if (get_status == 404) return -ENOENT;
+        return -EIO;
     }
 
-    if (content_type && !std::strcmp(content_type, "text/html")) {
-        is_dir = true;
+    if (!head_ok) {
+        if (response_code == 401 || response_code == 403) return -EACCES;
+        if (response_code == 404) return -ENOENT;
+        return -EIO;
     }
 
-    if (is_dir) {
+    if (looks_like_dir) {
         st->st_mode = S_IFDIR | S_IRUSR | S_IRGRP | S_IROTH;
     } else {
         st->st_mode = S_IFREG | S_IRUSR | S_IRGRP | S_IROTH;
         st->st_size = file_size > 0 ? file_size : 0;
     }
-
     st->st_mtime = file_time > 0 ? file_time : 0;
     st->st_atime = st->st_mtime;
     st->st_ctime = st->st_mtime;
     st->st_nlink = 1;
-
     return 0;
 }
 
