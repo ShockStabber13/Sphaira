@@ -1156,6 +1156,9 @@ size_t PushThreadData::push_thread_callback(const char *ptr, size_t size, size_t
         if ((status != 200 && status != 206) ||
             (data->require_partial_range &&
              (status != 206 || !data->range_header_valid))) {
+            // Record response metadata without URLs, tokens, or body data.
+            log_write("[HTTP RANGE] Rejected status=%ld, MIME=%s, valid_range=%d, redirects=%ld\n",
+                status, mime ? mime : "(none)", static_cast<int>(data->range_header_valid), redirects);
             // Abort before invalid HTTP data reaches the installer.
             data->rejected_response = true;
             sphaira::open_diagnostics::download_rejected.store(true);
@@ -1637,7 +1640,11 @@ std::string MountCurlDevice::build_url(const std::string& _path, bool is_dir) {
     }
 
     if (!m_url_path.empty()) {
-        if (path.starts_with('/') || m_url_path.ends_with('/')) {
+        // A WebDAV root of "/" plus an absolute entry such as "/file.nsz"
+        // used to produce "//file.nsz". Preserve exactly one separator.
+        if (m_url_path.ends_with('/') && path.starts_with('/')) {
+            path = m_url_path + path.substr(1);
+        } else if (m_url_path.ends_with('/') || path.starts_with('/')) {
             path = m_url_path + path;
         } else {
             path = m_url_path + '/' + path;
@@ -1660,7 +1667,8 @@ std::string MountCurlDevice::build_url(const std::string& _path, bool is_dir) {
     }
     ON_SCOPE_EXIT(curl_free(encoded_url));
 
-    log_write("[CURL] encoded url: %s\n", encoded_url);
+    // Do not log encoded_url: it embeds the WebDAV username and API key.
+    log_write("[CURL] encoded URL built (path length %zu)\n", path.size());
     return encoded_url;
 }
 
