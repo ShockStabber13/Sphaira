@@ -84,6 +84,9 @@ struct Device final : common::MountCurlDevice {
     using MountCurlDevice::MountCurlDevice;
 
 private:
+    // Only downloads use the stricter error handling; HEAD and PROPFIND keep
+    // their existing WebDAV status-code handling.
+    void curl_set_common_options(CURL* handle, const std::string& url) override;
     int devoptab_open(void *fileStruct, const char *path, int flags, int mode) override;
     int devoptab_close(void *fd) override;
     ssize_t devoptab_read(void *fd, char *ptr, size_t len) override;
@@ -111,6 +114,18 @@ private:
     int webdav_mkdir(const std::string& path);
     int webdav_rmdir(const std::string& path);
 };
+
+// Never return HTTP error pages as file data. A stalled TorBox download
+// must eventually fail so the read path can safely resume it.
+void Device::curl_set_common_options(CURL* handle, const std::string& url) {
+    common::MountCurlDevice::curl_set_common_options(handle, url);
+    if (handle == transfer_curl) {
+        curl_easy_setopt(handle, CURLOPT_FAILONERROR, 1L);
+        curl_easy_setopt(handle, CURLOPT_ACCEPT_ENCODING, "identity");
+        curl_easy_setopt(handle, CURLOPT_LOW_SPEED_LIMIT, 1L);
+        curl_easy_setopt(handle, CURLOPT_LOW_SPEED_TIME, 30L);
+    }
+}
 
 size_t dummy_data_callback(char *ptr, size_t size, size_t nmemb, void *userdata) {
     return size * nmemb;
@@ -461,13 +476,17 @@ int Device::devoptab_close(void *fd) {
 
 ssize_t Device::devoptab_read(void *fd, char *ptr, size_t len) {
     auto file = static_cast<File*>(fd);
-    len = std::min(len, file->entry->st.st_size - file->off);
-
     if (file->write_mode) {
         log_write("[WEBDAV] Attempt to read from a write-only file\n");
         return -EBADF;
     }
 
+    // Avoid unsigned underflow when seeking to or past the end of the file.
+    const auto total = file->entry->st.st_size;
+    if (total <= 0 || file->off >= static_cast<size_t>(total)) {
+        return 0;
+    }
+    len = std::min(len, static_cast<size_t>(total) - file->off);
     if (!len) {
         return 0;
     }
@@ -479,20 +498,63 @@ ssize_t Device::devoptab_read(void *fd, char *ptr, size_t len) {
         file->push_pull_thread_data = nullptr;
     }
 
-    if (!file->push_pull_thread_data) {
-        log_write("[WEBDAV] Creating download thread data for file: %s\n", file->entry->path.c_str());
-        file->push_pull_thread_data = CreatePushData(this->transfer_curl, build_url(file->entry->path, false), file->off);
+    constexpr int MAX_RETRIES = 3;
+    constexpr u64 RETRY_WAIT_NS = 500'000'000ULL;
+    size_t bytes_read = 0;
+    int retries = 0;
+
+    while (bytes_read < len) {
         if (!file->push_pull_thread_data) {
-            log_write("[WEBDAV] Failed to create download thread data for file: %s\n", file->entry->path.c_str());
+            file->push_pull_thread_data = CreatePushData(this->transfer_curl, build_url(file->entry->path, false), file->off);
+            if (!file->push_pull_thread_data) {
+                log_write("[WEBDAV] Failed to start download at offset %zu\n", file->off);
+                return -EIO;
+            }
+        }
+
+        const auto count = file->push_pull_thread_data->PullData(ptr + bytes_read, len - bytes_read);
+        if (count) {
+            bytes_read += count;
+            file->off += count;
+            file->last_off = file->off;
+            retries = 0;
+            continue;
+        }
+
+        // Incomplete transfer, including a clean-but-premature EOF. Never
+        // report EOF while there are still bytes left in the known file.
+        const auto http_code = file->push_pull_thread_data->code;
+        const auto curl_failed = file->push_pull_thread_data->error;
+        delete file->push_pull_thread_data;
+        file->push_pull_thread_data = nullptr;
+
+        if (http_code == 401 || http_code == 403) {
+            log_write("[WEBDAV] Download unauthorized (HTTP %ld) at %zu\n", http_code, file->off);
+            return -EACCES;
+        }
+        if (http_code == 404) {
+            log_write("[WEBDAV] Download missing (HTTP 404) at %zu\n", file->off);
+            return -ENOENT;
+        }
+        // Non-transient HTTP failures should be reported, not retried.
+        if (http_code >= 400 && http_code != 429 && http_code != 500 &&
+            http_code != 502 && http_code != 503 && http_code != 504) {
+            log_write("[WEBDAV] Download rejected (HTTP %ld) at %zu\n", http_code, file->off);
             return -EIO;
         }
+
+        if (++retries > MAX_RETRIES) {
+            log_write("[WEBDAV] Exhausted retries at offset %zu (HTTP %ld, curl_error=%d)\n",
+                file->off, http_code, curl_failed);
+            return -EIO;
+        }
+
+        log_write("[WEBDAV] Short read at %zu; retry %d/%d (HTTP %ld, curl_error=%d)\n",
+            file->off, retries, MAX_RETRIES, http_code, curl_failed);
+        svcSleepThread(RETRY_WAIT_NS);
     }
 
-    const auto ret = file->push_pull_thread_data->PullData(ptr, len);
-    file->off += ret;
-    file->last_off = file->off;
-
-    return ret;
+    return bytes_read;
 }
 
 ssize_t Device::devoptab_write(void *fd, const char *ptr, size_t len) {
