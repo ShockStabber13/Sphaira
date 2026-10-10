@@ -5,6 +5,7 @@
 #include "fs.hpp"
 #include <functional>
 #include <span>
+#include <array>
 
 namespace sphaira::ui {
 
@@ -105,6 +106,10 @@ private:
     s64 m_offset{};
     s64 m_last_offset{};
     s64 m_speed{};
+    // One bytes/second sample per elapsed second, averaged over up to 5s.
+    std::array<s64, 5> m_speed_samples{};
+    std::size_t m_speed_sample_count{};
+    std::size_t m_speed_sample_next{};
     TimeStamp m_timestamp{};
     std::vector<u8> m_image_data{};
     int m_image_pending{};
