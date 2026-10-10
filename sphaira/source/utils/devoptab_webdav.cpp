@@ -624,7 +624,8 @@ ssize_t Device::devoptab_read(void *fd, char *ptr, size_t len) {
         const bool rejected = transfer->rejected_response;
         delete file->push_pull_thread_data;
         file->push_pull_thread_data = nullptr;
-        file->download_window_end = 0;
+        // Keep the last attempted end for failure diagnostics; a new
+        // stream will replace this value on the next retry.
 
         if (http_status == 401 || http_status == 403) {
             report_failure(2, http_status, curl_rc, rejected, reconnects);
