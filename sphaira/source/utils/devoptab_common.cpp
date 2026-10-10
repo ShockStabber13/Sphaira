@@ -15,6 +15,7 @@
 #include <curl/curl.h>
 
 namespace sphaira::devoptab::common {
+thread_local std::stop_token file_open_cancel_token{};
 namespace {
 
 RwLock g_rwlock{};
@@ -1409,8 +1410,9 @@ bool MountCurlDevice::Mount() {
 
 PushThreadData* MountCurlDevice::CreatePushData(CURL* curl, const std::string& url,
                                                 size_t offset, bool require_range_from_start,
-                                                size_t range_end_exclusive) {
-    auto data = new PushThreadData{curl};
+                                                size_t range_end_exclusive,
+                                                std::stop_token token) {
+    auto data = new PushThreadData{curl, token};
     if (!data) {
         log_write("[PUSH:PULL] Failed to allocate PushThreadData\n");
         return nullptr;
