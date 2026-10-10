@@ -1028,13 +1028,20 @@ size_t PushPullThreadData::PullData(char* data, size_t total_size, bool curl) {
         // if we are not in a curl callback, then we can block until we have data.
         size_t bytes_read = 0;
         while (bytes_read < total_size && !error) {
+            // A file copy can be cancelled on another thread while this
+            // reader is waiting for the next WebDAV chunk.
+            if (stop_token.stop_requested()) {
+                break;
+            }
             if (buffer.empty()) {
                 if (finished) {
                     break;
                 }
 
                 condvarWakeOne(&can_push);
-                condvarWait(&can_pull, &mutex);
+                // Periodically re-check stop_token even when the CURL worker
+                // is stalled or a condition-variable wake was missed.
+                condvarWaitTimeout(&can_pull, &mutex, 100'000'000LL);
                 continue;
             }
 
