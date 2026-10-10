@@ -847,7 +847,10 @@ void FsView::InstallFiles() {
 
                 R_SUCCEED();
             }, [this](Result rc){
-                App::PushErrorBox(rc, "File install failed!"_i18n);
+                // User-requested cancellation is not an installation error.
+                if (rc != Result_TransferCancelled) {
+                    App::PushErrorBox(rc, "File install failed!"_i18n);
+                }
             }, ui::ProgressBoxOption::ScreenToggle);
         }
     });
