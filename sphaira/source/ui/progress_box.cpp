@@ -1,4 +1,5 @@
 #include "ui/progress_box.hpp"
+#include "utils/devoptab_common.hpp"
 #include "ui/option_box.hpp"
 #include "ui/nvg_util.hpp"
 #include "app.hpp"
@@ -349,7 +350,14 @@ auto ProgressBox::CopyFile(fs::Fs* fs_src, fs::Fs* fs_dst, const fs::FsPath& src
     const auto is_both_native = fs_src->IsNative() && fs_dst->IsNative();
 
     fs::File src_file;
-    R_TRY(fs_src->OpenFile(src_path, FsOpenMode_Read, &src_file));
+    // The WebDAV source must inherit the same cancellation token as the
+    // installer path, otherwise a blocked range read keeps Stop waiting.
+    auto& open_token = devoptab::common::file_open_cancel_token;
+    const auto previous_token = open_token;
+    open_token = GetStopToken();
+    const Result open_result = fs_src->OpenFile(src_path, FsOpenMode_Read, &src_file);
+    open_token = previous_token;
+    R_TRY(open_result);
 
     s64 src_size;
     R_TRY(src_file.GetSize(&src_size));
