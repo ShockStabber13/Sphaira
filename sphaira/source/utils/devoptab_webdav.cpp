@@ -39,6 +39,7 @@ using DirEntries = std::vector<DirEntry>;
 struct FileEntry {
     std::string path{};
     struct stat st{};
+    std::stop_token cancel_token{};
 };
 
 // TorBox may reject HEAD but support HTTP byte-range GET.
@@ -507,7 +508,7 @@ int Device::devoptab_open(void *fileStruct, const char *path, int flags, int mod
         st.st_size > 0 ? static_cast<u64>(st.st_size) : 0);
     sphaira::open_diagnostics::webdav_read_failed.store(false);
     log_write("[WEBDAV] Opening file: %s\n", path);
-    file->entry = new FileEntry{path, st};
+    file->entry = new FileEntry{path, st, common::file_open_cancel_token};
     file->write_mode = (flags & (O_WRONLY | O_RDWR));
 
     return 0;
@@ -524,6 +525,7 @@ int Device::devoptab_close(void *fd) {
 
 ssize_t Device::devoptab_read(void *fd, char *ptr, size_t len) {
     auto file = static_cast<File*>(fd);
+    if (file->entry->cancel_token.stop_requested()) return -ECANCELED;
     if (file->write_mode) {
         return -EBADF;
     }
@@ -571,6 +573,9 @@ ssize_t Device::devoptab_read(void *fd, char *ptr, size_t len) {
     size_t total = 0;
     unsigned reconnects = 0;
     while (total < len) {
+        // This can run on YATI's separate reader thread. Poll its installer's
+        // stop token even during repeated HTTP retries.
+        if (file->entry->cancel_token.stop_requested()) return -ECANCELED;
         // The previous bounded window has been fully consumed.
         if (file->push_pull_thread_data &&
             file->off >= file->download_window_end) {
@@ -594,7 +599,8 @@ ssize_t Device::devoptab_read(void *fd, char *ptr, size_t len) {
             file->push_pull_thread_data = CreatePushData(
                 this->transfer_curl,
                 build_url(file->entry->path, false),
-                file->off, true, file->download_window_end);
+                file->off, true, file->download_window_end,
+                file->entry->cancel_token);
             if (!file->push_pull_thread_data) {
                 report_failure(1, 0, CURLE_FAILED_INIT, false, reconnects);
                 return -EIO;
@@ -607,6 +613,7 @@ ssize_t Device::devoptab_read(void *fd, char *ptr, size_t len) {
             len - total, file->download_window_end - file->off);
         auto* transfer = file->push_pull_thread_data;
         const size_t read_now = transfer->PullData(ptr + total, wanted);
+        if (file->entry->cancel_token.stop_requested()) return -ECANCELED;
         total += read_now;
         file->off += read_now;
         file->last_off = file->off;
@@ -636,9 +643,18 @@ ssize_t Device::devoptab_read(void *fd, char *ptr, size_t len) {
             return -ENOENT;
         }
 
-        // A 200/HTML response often means TorBox disregarded this range.
-        // Before giving up, retry the same unread bytes with a smaller,
-        // explicitly bounded range. Never accept HTTP 200 as NSP bytes.
+        // A 200 response to a requested Range is a protocol mismatch. A
+        // 206 with the wrong Content-Range is also unsafe. Retrying smaller
+        // chunks cannot repair either; report immediately rather than
+        // repeatedly resetting the progress display and delaying cancel.
+        if (rejected && (http_status == 200 || http_status == 206)) {
+            report_failure(3, http_status, curl_rc, rejected, reconnects);
+            log_write("[WEBDAV] Unsupported byte-range response: HTTP %ld at %zu\n",
+                http_status, file->off);
+            return -EIO;
+        }
+
+        // Retry only recoverable network failures, never invalid file bytes.
         const bool recoverable_curl = curl_rc == CURLE_OK ||
             curl_rc == CURLE_PARTIAL_FILE ||
             curl_rc == CURLE_RECV_ERROR ||
@@ -671,6 +687,7 @@ ssize_t Device::devoptab_read(void *fd, char *ptr, size_t len) {
         log_write("[WEBDAV] Retry at %zu with %zu-byte range (%u/%u, HTTP %ld, CURL %d)\n",
             file->off, file->download_window_size, reconnects,
             max_reconnects, http_status, static_cast<int>(curl_rc));
+        if (file->entry->cancel_token.stop_requested()) return -ECANCELED;
         svcSleepThread(reconnect_delay_ns);
     }
 
