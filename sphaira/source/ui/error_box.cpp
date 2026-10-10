@@ -216,6 +216,28 @@ ErrorBox::ErrorBox(const std::string& message) : m_message{message} {
 ErrorBox::ErrorBox(Result code, const std::string& message) : ErrorBox{message} {
     m_code = code;
     m_code_message = GetCodeMessage(code);
+    if (code == Result_NspBadMagic &&
+        sphaira::open_diagnostics::invalid_nsp_header_valid.load()) {
+        // Header hex distinguishes an actual PFS0 package from a server's
+        // HTML, XML, JSON or other payload. No URL or token is displayed.
+        char first[64]{}, second[64]{};
+        auto& bytes = sphaira::open_diagnostics::invalid_nsp_header;
+        std::snprintf(first, sizeof(first),
+            "Received: %02X %02X %02X %02X %02X %02X %02X %02X",
+            bytes[0].load(), bytes[1].load(), bytes[2].load(),
+            bytes[3].load(), bytes[4].load(), bytes[5].load(),
+            bytes[6].load(), bytes[7].load());
+        std::snprintf(second, sizeof(second),
+            "Next 8:   %02X %02X %02X %02X %02X %02X %02X %02X",
+            bytes[8].load(), bytes[9].load(), bytes[10].load(),
+            bytes[11].load(), bytes[12].load(), bytes[13].load(),
+            bytes[14].load(), bytes[15].load());
+        m_message = "Expected NSP header: 50 46 53 30 (PFS0)\n";
+        m_message += first;
+        m_message += "\n";
+        m_message += second;
+        m_message += "\nCheck the WebDAV file response";
+    }
     if (code == Result_FsStdioFailedToOpenFile) {
         const int err = sphaira::open_diagnostics::file_errno.load();
         char details[256]{};

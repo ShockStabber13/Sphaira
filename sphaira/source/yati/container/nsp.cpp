@@ -1,6 +1,7 @@
 #include "yati/container/nsp.hpp"
 #include "defines.hpp"
 #include "log.hpp"
+#include "utils/open_diagnostics.hpp"
 #include <limits>
 #include <memory>
 #include <cstring>
@@ -98,7 +99,13 @@ Result Nsp::GetCollections(Collections& out, s64 off, s64 container_size) {
 
     Pfs0Header header{};
     R_TRY(ReadExact(m_source, std::addressof(header), off, sizeof(header)));
-    R_UNLESS(header.magic == PFS0_MAGIC, Result_NspBadMagic);
+    if (header.magic != PFS0_MAGIC) {
+        // Determine whether a WebDAV/HTTP endpoint served real NSP bytes
+        // or a response document, without logging any URL or credentials.
+        sphaira::open_diagnostics::CaptureInvalidNspHeader(
+            std::addressof(header), sizeof(header));
+        R_THROW(Result_NspBadMagic);
+    }
     R_UNLESS(header.total_files <= MAX_PFS0_FILES, Result_NspInvalidHeader);
     R_UNLESS(header.string_table_size <= MAX_PFS0_STRING_TABLE_SIZE, Result_NspInvalidHeader);
 

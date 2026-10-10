@@ -28,6 +28,19 @@ struct Attempt {
 };
 
 inline thread_local Attempt current{};
+// First 16 bytes only, recorded only on a failed NSP magic check.
+// Never record URLs, paths, passwords, or entire response bodies.
+inline std::array<std::atomic<unsigned char>, 16> invalid_nsp_header{};
+inline std::atomic<bool> invalid_nsp_header_valid{false};
+
+inline void CaptureInvalidNspHeader(const void* data, std::size_t len) {
+    invalid_nsp_header_valid.store(false);
+    const auto* bytes = static_cast<const unsigned char*>(data);
+    for (std::size_t i = 0; i < invalid_nsp_header.size(); ++i)
+        invalid_nsp_header[i].store(i < len ? bytes[i] : 0);
+    invalid_nsp_header_valid.store(true);
+}
+
 inline std::atomic<int> file_errno{};
 inline std::atomic<int> open_stage{};
 inline std::atomic<int> path_length{};
