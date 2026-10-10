@@ -228,12 +228,17 @@ ErrorBox::ErrorBox(Result code, const std::string& message) : ErrorBox{message} 
             static_cast<unsigned long long>(diag::webdav_failure_window.load()));
         m_message += "\n";
         m_message += line;
-        std::snprintf(line, sizeof(line), "HTTP=%ld, curl=%d, reject=%d",
+        const int kind = diag::download_mime_kind.load();
+        const char* mime = kind == 1 ? "XML" : kind == 2 ? "HTML" :
+            kind == 3 ? "BINARY" : kind == 4 ? "OTHER" : "UNKNOWN";
+        std::snprintf(line, sizeof(line), "HTTP=%ld curl=%d MIME=%s redirects=%ld",
             diag::webdav_failure_http.load(), diag::webdav_failure_curl.load(),
-            static_cast<int>(diag::webdav_failure_rejected.load()));
+            mime, diag::download_redirect_count.load());
         m_message += "\n";
         m_message += line;
-        std::snprintf(line, sizeof(line), "Reason=%d, retries=%d",
+        std::snprintf(line, sizeof(line), "rangeOK=%d reject=%d reason=%d retries=%d",
+            static_cast<int>(diag::download_range_valid.load()),
+            static_cast<int>(diag::webdav_failure_rejected.load()),
             diag::webdav_failure_reason.load(),
             diag::webdav_failure_attempts.load());
         m_message += "\n";
