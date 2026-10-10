@@ -201,7 +201,10 @@ struct MountCurlDevice : MountDevice {
     using MountDevice::MountDevice;
     virtual ~MountCurlDevice();
 
-    PushThreadData* CreatePushData(CURL* curl, const std::string& url, size_t offset);
+    // require_range_from_start forces Range: bytes=0- on initial WebDAV reads.
+    // Other HTTP mounts preserve their existing request behavior.
+    PushThreadData* CreatePushData(CURL* curl, const std::string& url,
+                                   size_t offset, bool require_range_from_start = false);
     PullThreadData* CreatePullData(CURL* curl, const std::string& url, bool append = false);
 
     virtual bool Mount();

@@ -1389,7 +1389,8 @@ bool MountCurlDevice::Mount() {
     return m_mounted = true;
 }
 
-PushThreadData* MountCurlDevice::CreatePushData(CURL* curl, const std::string& url, size_t offset) {
+PushThreadData* MountCurlDevice::CreatePushData(CURL* curl, const std::string& url,
+                                                size_t offset, bool require_range_from_start) {
     auto data = new PushThreadData{curl};
     if (!data) {
         log_write("[PUSH:PULL] Failed to allocate PushThreadData\n");
@@ -1404,7 +1405,10 @@ PushThreadData* MountCurlDevice::CreatePushData(CURL* curl, const std::string& u
     data->expected_range_offset = offset;
     data->require_http_status =
         url.starts_with("https://") || url.starts_with("http://");
-    data->require_partial_range = offset > 0 && data->require_http_status;
+    // TorBox WebDAV sends HTML for an un-ranged initial GET. For WebDAV,
+    // require 206 + a matching Content-Range even when offset == 0.
+    data->require_partial_range = data->require_http_status &&
+        (offset > 0 || require_range_from_start);
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, PushPullThreadData::response_header_callback);
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, data);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, PushThreadData::push_thread_callback);
@@ -1423,7 +1427,7 @@ PushThreadData* MountCurlDevice::CreatePushData(CURL* curl, const std::string& u
         }
     }
 
-    if (offset > 0) {
+    if (offset > 0 || require_range_from_start) {
         char range[64];
         std::snprintf(range, sizeof(range), "%zu-", offset);
         log_write("[PUSH:PULL] Requesting range: %s\n", range);

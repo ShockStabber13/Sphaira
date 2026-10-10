@@ -538,7 +538,12 @@ ssize_t Device::devoptab_read(void *fd, char *ptr, size_t len) {
 
     if (!file->push_pull_thread_data) {
         log_write("[WEBDAV] Creating download thread data for file: %s\n", file->entry->path.c_str());
-        file->push_pull_thread_data = CreatePushData(this->transfer_curl, build_url(file->entry->path, false), file->off);
+        // Force HTTP Range even at byte 0, matching the verified TorBox
+        // curl -r 0-15 request (HTTP 206 + correct file bytes). Reject
+        // the WebDAV HTML viewer's un-ranged HTTP 200 response.
+        file->push_pull_thread_data = CreatePushData(
+            this->transfer_curl, build_url(file->entry->path, false),
+            file->off, true);
         if (!file->push_pull_thread_data) {
             log_write("[WEBDAV] Failed to create download thread data for file: %s\n", file->entry->path.c_str());
             return -EIO;
