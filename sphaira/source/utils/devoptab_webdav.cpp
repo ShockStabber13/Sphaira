@@ -130,7 +130,7 @@ std::pair<bool, long> Device::webdav_custom_command(const std::string& path, con
         header_list = curl_slist_append(header_list, header.c_str());
     }
 
-    log_write("[WEBDAV] %s %s\n", cmd.c_str(), url.c_str());
+    // The full URL contains the WebDAV API key; never write it to log.txt.\n    log_write("[WEBDAV] %s request (path length=%zu)\n", cmd.c_str(), path.size());
     curl_set_common_options(this->curl, url);
     curl_easy_setopt(this->curl, CURLOPT_HTTPHEADER, header_list);
     curl_easy_setopt(this->curl, CURLOPT_CUSTOMREQUEST, cmd.c_str());
