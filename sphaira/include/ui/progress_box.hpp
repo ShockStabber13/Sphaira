@@ -46,6 +46,7 @@ struct ProgressBox final : Widget {
     void RequestExit();
     auto ShouldExit() -> bool;
     auto ShouldExitResult() -> Result;
+    std::stop_token GetStopToken() const { return m_stop_source.get_token(); }
 
     void AddCancelEvent(UEvent* event);
     void RemoveCancelEvent(const UEvent* event);
