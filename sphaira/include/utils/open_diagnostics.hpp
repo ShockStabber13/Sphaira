@@ -46,6 +46,17 @@ inline std::atomic<std::uint64_t> download_payload_bytes{0};
 inline std::atomic<std::uint64_t> webdav_file_size{0};
 inline std::atomic<std::uint64_t> webdav_read_requested{0};
 inline std::atomic<std::uint64_t> webdav_read_allowed{0};
+// Last WebDAV streaming failure (metadata only; no paths or credentials).
+inline std::atomic<bool> webdav_read_failed{false};
+inline std::atomic<std::uint64_t> webdav_failure_offset{0};
+inline std::atomic<std::uint64_t> webdav_failure_end{0};
+inline std::atomic<std::uint64_t> webdav_failure_window{0};
+inline std::atomic<long> webdav_failure_http{0};
+inline std::atomic<int> webdav_failure_curl{-1};
+inline std::atomic<bool> webdav_failure_rejected{false};
+inline std::atomic<int> webdav_failure_attempts{0};
+inline std::atomic<int> webdav_failure_reason{0}; // 1 start, 2 auth, 3 HTTP, 4 transfer
+
 
 // Metadata-only NSP parser diagnostics, captured without paths or payload.
 // The stage is a numbered validation or read operation (see nsp.cpp).

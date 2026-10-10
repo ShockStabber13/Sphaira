@@ -216,6 +216,29 @@ ErrorBox::ErrorBox(const std::string& message) : m_message{message} {
 ErrorBox::ErrorBox(Result code, const std::string& message) : ErrorBox{message} {
     m_code = code;
     m_code_message = GetCodeMessage(code);
+    if (code == Result_FsStdioFailedToRead &&
+        sphaira::open_diagnostics::webdav_read_failed.load()) {
+        namespace diag = sphaira::open_diagnostics;
+        char line[140]{};
+        std::snprintf(line, sizeof(line), "Read failed at byte %llu",
+            static_cast<unsigned long long>(diag::webdav_failure_offset.load()));
+        m_message = line;
+        std::snprintf(line, sizeof(line), "Range end %llu; window %llu bytes",
+            static_cast<unsigned long long>(diag::webdav_failure_end.load()),
+            static_cast<unsigned long long>(diag::webdav_failure_window.load()));
+        m_message += "\n";
+        m_message += line;
+        std::snprintf(line, sizeof(line), "HTTP=%ld, curl=%d, reject=%d",
+            diag::webdav_failure_http.load(), diag::webdav_failure_curl.load(),
+            static_cast<int>(diag::webdav_failure_rejected.load()));
+        m_message += "\n";
+        m_message += line;
+        std::snprintf(line, sizeof(line), "Reason=%d, retries=%d",
+            diag::webdav_failure_reason.load(),
+            diag::webdav_failure_attempts.load());
+        m_message += "\n";
+        m_message += line;
+    }
     if (code == Result_NspInvalidHeader &&
         sphaira::open_diagnostics::nsp_diag_valid.load()) {
         namespace diag = sphaira::open_diagnostics;
