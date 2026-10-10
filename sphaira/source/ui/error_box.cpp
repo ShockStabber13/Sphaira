@@ -216,6 +216,49 @@ ErrorBox::ErrorBox(const std::string& message) : m_message{message} {
 ErrorBox::ErrorBox(Result code, const std::string& message) : ErrorBox{message} {
     m_code = code;
     m_code_message = GetCodeMessage(code);
+    if (code == Result_NspInvalidHeader &&
+        sphaira::open_diagnostics::nsp_diag_valid.load()) {
+        namespace diag = sphaira::open_diagnostics;
+        const int stage = diag::nsp_stage.load();
+        const char* stage_name = "Unknown";
+        switch (stage) {
+            case 1: stage_name = "Start offset"; break;
+            case 2: stage_name = "Container bounds"; break;
+            case 3: stage_name = "PFS0 header read"; break;
+            case 4: stage_name = "File count"; break;
+            case 5: stage_name = "String table size"; break;
+            case 6: stage_name = "Table offset math"; break;
+            case 7: stage_name = "File table read"; break;
+            case 8: stage_name = "String table read"; break;
+            case 9: stage_name = "Filename offset"; break;
+            case 10: stage_name = "Filename terminator"; break;
+            case 11: stage_name = "File bounds"; break;
+        }
+        char line[140]{};
+        std::snprintf(line, sizeof(line), "NSP check %d: %s", stage, stage_name);
+        m_message = line;
+        std::snprintf(line, sizeof(line), "Files=%llu, Strings=%llu, Item=%llu",
+            static_cast<unsigned long long>(diag::nsp_files.load()),
+            static_cast<unsigned long long>(diag::nsp_strings.load()),
+            static_cast<unsigned long long>(diag::nsp_file_index.load()));
+        m_message += "\n";
+        m_message += line;
+        if (diag::nsp_read_short.load()) {
+            std::snprintf(line, sizeof(line), "Read at %llu: expected %llu, got %llu",
+                static_cast<unsigned long long>(diag::nsp_read_offset.load()),
+                static_cast<unsigned long long>(diag::nsp_read_expected.load()),
+                static_cast<unsigned long long>(diag::nsp_read_received.load()));
+            m_message += "\n";
+            m_message += line;
+        } else {
+            m_message += "\nHeader or table validation failed";
+        }
+        std::snprintf(line, sizeof(line), "GET HTTP=%ld, redirects=%ld",
+            diag::download_status.load(),
+            diag::download_redirect_count.load());
+        m_message += "\n";
+        m_message += line;
+    }
     if (code == Result_NspBadMagic &&
         sphaira::open_diagnostics::invalid_nsp_header_valid.load()) {
         // Header hex distinguishes an actual PFS0 package from a server's
