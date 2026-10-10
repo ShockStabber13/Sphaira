@@ -13,6 +13,7 @@
 
 #include <cstring>
 #include <cmath>
+#include <algorithm>
 
 namespace sphaira::ui {
 namespace {
@@ -114,10 +115,30 @@ auto ProgressBox::Draw(NVGcontext* vg, Theme* theme) -> void {
     mutexLock(&m_mutex);
     std::vector<u8> image_data{};
     std::swap(m_image_data, image_data);
-    if (m_timestamp.GetSeconds()) {
+    if (const u64 elapsed_seconds = m_timestamp.GetSeconds()) {
         m_timestamp.Update();
-        m_speed = m_offset - m_last_offset;
+        // Keep the progress counter exact; smooth only the displayed rate.
+        const auto delta = std::max<s64>(0, m_offset - m_last_offset);
         m_last_offset = m_offset;
+        const auto rate = static_cast<s64>(static_cast<u64>(delta) / elapsed_seconds);
+        const auto window = m_speed_samples.size();
+        if (elapsed_seconds >= window) {
+            // Long pauses must not preserve stale speed readings.
+            m_speed_samples.fill(0);
+            m_speed_sample_count = 0;
+            m_speed_sample_next = 0;
+        }
+        const auto samples = std::min<u64>(elapsed_seconds, window);
+        for (u64 i = 0; i < samples; ++i) {
+            m_speed_samples[m_speed_sample_next] = rate;
+            m_speed_sample_next = (m_speed_sample_next + 1) % window;
+            m_speed_sample_count = std::min(m_speed_sample_count + 1, window);
+        }
+        s64 sum = 0;
+        for (std::size_t i = 0; i < m_speed_sample_count; ++i) {
+            sum += m_speed_samples[i];
+        }
+        m_speed = m_speed_sample_count ? sum / m_speed_sample_count : 0;
     }
 
     const auto action = m_action;
@@ -126,7 +147,6 @@ auto ProgressBox::Draw(NVGcontext* vg, Theme* theme) -> void {
     const auto size = m_size;
     const auto offset = m_offset;
     const auto speed = m_speed;
-    const auto last_offset = m_last_offset;
     auto image = m_image;
 
     if (m_is_image_pending) {
@@ -175,22 +195,24 @@ auto ProgressBox::Draw(NVGcontext* vg, Theme* theme) -> void {
         const auto rad = 15;
         gfx::drawSpinner(vg, theme, prog_bar.x - pad - rad, prog_bar.y + prog_bar.h / 2, rad, armTicksToNs(armGetSystemTick()) / 1e+9);
 
-        const auto left = size - last_offset;
-        const auto left_seconds = left / speed;
-        const auto hours = left_seconds / (60 * 60);
-        const auto minutes = left_seconds % (60 * 60) / 60;
-        const auto seconds = left_seconds % 60;
+        char time_str[64] = "Calculating time remaining...";
+        if (speed > 0) {
+            const auto remaining = std::max<s64>(0, size - offset);
+            const auto left_seconds = static_cast<std::size_t>(remaining / speed);
+            const auto hours = left_seconds / (60 * 60);
+            const auto minutes = left_seconds % (60 * 60) / 60;
+            const auto seconds = left_seconds % 60;
 
-        char time_str[64];
-        if (hours) {
-            std::snprintf(time_str, sizeof(time_str), "%zu hours %zu minutes remaining"_i18n.c_str(), hours, minutes);
-        } else if (minutes) {
-            std::snprintf(time_str, sizeof(time_str), "%zu minutes %zu seconds remaining"_i18n.c_str(), minutes, seconds);
-        } else {
-            std::snprintf(time_str, sizeof(time_str), "%zu seconds remaining"_i18n.c_str(), seconds);
+            if (hours) {
+                std::snprintf(time_str, sizeof(time_str), "%zu hours %zu minutes remaining"_i18n.c_str(), hours, minutes);
+            } else if (minutes) {
+                std::snprintf(time_str, sizeof(time_str), "%zu minutes %zu seconds remaining"_i18n.c_str(), minutes, seconds);
+            } else {
+                std::snprintf(time_str, sizeof(time_str), "%zu seconds remaining"_i18n.c_str(), seconds);
+            }
         }
 
-        gfx::drawTextArgs(vg, center_x, prog_bar.y + prog_bar.h + 30, 18, NVG_ALIGN_CENTER | NVG_ALIGN_TOP, theme->GetColour(ThemeEntryID_TEXT), "%s (%s)", time_str, utils::formatSizeNetwork(speed).c_str());
+        gfx::drawTextArgs(vg, center_x, prog_bar.y + prog_bar.h + 30, 18, NVG_ALIGN_CENTER | NVG_ALIGN_TOP, theme->GetColour(ThemeEntryID_TEXT), "%s (%s)", time_str, utils::formatSizeNetwork(static_cast<u64>(std::max<s64>(0, speed))).c_str());
     }
 
     gfx::drawTextArgs(vg, center_x, m_pos.y + 40, 24, NVG_ALIGN_CENTER | NVG_ALIGN_TOP, theme->GetColour(ThemeEntryID_TEXT), action.c_str());
@@ -263,6 +285,10 @@ auto ProgressBox::NewTransfer(const std::string& transfer)  -> ProgressBox& {
     m_size = 0;
     m_offset = 0;
     m_last_offset = 0;
+    m_speed = 0;
+    m_speed_samples.fill(0);
+    m_speed_sample_count = 0;
+    m_speed_sample_next = 0;
     m_timestamp.Update();
     return *this;
 }
@@ -272,6 +298,10 @@ auto ProgressBox::ResetTranfser() -> ProgressBox& {
     m_size = 0;
     m_offset = 0;
     m_last_offset = 0;
+    m_speed = 0;
+    m_speed_samples.fill(0);
+    m_speed_sample_count = 0;
+    m_speed_sample_next = 0;
     m_timestamp.Update();
     return *this;
 }
