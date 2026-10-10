@@ -288,6 +288,63 @@ int Device::webdav_stat(const std::string& path, struct stat* st, bool is_dir) {
     sphaira::open_diagnostics::current.head_curl = static_cast<int>(head_rc);
     const bool head_ok = head_rc == CURLE_OK && (status == 200 || status == 206);
     if (!is_dir && (!head_ok || length <= 0)) {
+        // TorBox's WebDAV can return 207 to HEAD and a chunked 200 to GET
+        // (no Content-Length). Its PROPFIND endpoint provides the actual
+        // file metadata. Query that before attempting the Range fallback.
+        constexpr std::string_view props =
+            "<?xml version=\"1.0\" encoding=\"utf-8\" ?>"
+            "<d:propfind xmlns:d=\"DAV:\"><d:prop>"
+            "<d:getcontentlength/><d:resourcetype/>"
+            "</d:prop></d:propfind>";
+        const std::string prop_headers[] = {
+            "Content-Type: application/xml; charset=utf-8",
+            "Depth: 0",
+        };
+        std::vector<char> prop_xml;
+        const auto [prop_ok, prop_http] = webdav_custom_command(
+            path, "PROPFIND", props, prop_headers, false, &prop_xml);
+        if (prop_ok && prop_http == 207 && !prop_xml.empty()) {
+            pugi::xml_document doc;
+            if (doc.load_buffer(prop_xml.data(), prop_xml.size())) {
+                const auto responses = doc.select_nodes(XPATH_RESPONSE);
+                // Depth: 0 must describe exactly the requested resource.
+                // Never mistake a directory entry for a downloadable file.
+                if (responses.size() == 1 &&
+                    !responses[0].node().select_node(
+                        ".//*[local-name()='collection']")) {
+                    const auto stats = responses[0].node().select_nodes(
+                        ".//*[local-name()='propstat']");
+                    for (const auto& entry : stats) {
+                        const auto http_status = entry.node().select_node(
+                            "./*[local-name()='status']");
+                        const std::string_view status_text =
+                            http_status ? http_status.node().text().as_string() : "";
+                        if (status_text.find(" 200 ") == std::string_view::npos)
+                            continue;
+                        const auto size_node = entry.node().select_node(
+                            "./*[local-name()='prop']/*[local-name()='getcontentlength']");
+                        if (!size_node)
+                            continue;
+                        const char* raw_size = size_node.node().text().as_string();
+                        if (!raw_size || !*raw_size)
+                            continue;
+                        char* end = nullptr;
+                        const auto parsed = std::strtoull(raw_size, &end, 10);
+                        if (end == raw_size || *end != '\0' || parsed == 0 ||
+                            parsed > static_cast<unsigned long long>(
+                                std::numeric_limits<curl_off_t>::max()))
+                            continue;
+                        st->st_mode = S_IFREG | S_IRUSR | S_IRGRP | S_IROTH;
+                        st->st_size = static_cast<curl_off_t>(parsed);
+                        st->st_nlink = 1;
+                        log_write("[WEBDAV] PROPFIND recovered file size (%llu bytes)\\n",
+                            parsed);
+                        return 0;
+                    }
+                }
+            }
+        }
+
         log_write("[WEBDAV] HEAD unusable (curl=%d http=%ld size=%lld); probing range\\n",
             static_cast<int>(head_rc), status, static_cast<long long>(length));
 
