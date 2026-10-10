@@ -224,14 +224,14 @@ ErrorBox::ErrorBox(Result code, const std::string& message) : ErrorBox{message} 
         auto& bytes = sphaira::open_diagnostics::invalid_nsp_header;
         std::snprintf(first, sizeof(first),
             "Received: %02X %02X %02X %02X %02X %02X %02X %02X",
-            bytes[0].load(), bytes[1].load(), bytes[2].load(),
-            bytes[3].load(), bytes[4].load(), bytes[5].load(),
-            bytes[6].load(), bytes[7].load());
+            static_cast<unsigned>(bytes[0].load()), static_cast<unsigned>(bytes[1].load()), static_cast<unsigned>(bytes[2].load()),
+            static_cast<unsigned>(bytes[3].load()), static_cast<unsigned>(bytes[4].load()), static_cast<unsigned>(bytes[5].load()),
+            static_cast<unsigned>(bytes[6].load()), static_cast<unsigned>(bytes[7].load()));
         std::snprintf(second, sizeof(second),
             "Next 8:   %02X %02X %02X %02X %02X %02X %02X %02X",
-            bytes[8].load(), bytes[9].load(), bytes[10].load(),
-            bytes[11].load(), bytes[12].load(), bytes[13].load(),
-            bytes[14].load(), bytes[15].load());
+            static_cast<unsigned>(bytes[8].load()), static_cast<unsigned>(bytes[9].load()), static_cast<unsigned>(bytes[10].load()),
+            static_cast<unsigned>(bytes[11].load()), static_cast<unsigned>(bytes[12].load()), static_cast<unsigned>(bytes[13].load()),
+            static_cast<unsigned>(bytes[14].load()), static_cast<unsigned>(bytes[15].load()));
         m_message = "Expected NSP header: 50 46 53 30 (PFS0)\n";
         m_message += first;
         m_message += "\n";
