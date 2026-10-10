@@ -1136,8 +1136,20 @@ size_t PushThreadData::push_thread_callback(const char *ptr, size_t size, size_t
     auto* data = static_cast<PushThreadData*>(userdata);
 
     if (data->require_http_status) {
-        long status = 0;
+        long status = 0, redirects = 0;
         curl_easy_getinfo(data->curl, CURLINFO_RESPONSE_CODE, &status);
+        curl_easy_getinfo(data->curl, CURLINFO_REDIRECT_COUNT, &redirects);
+        char* mime = nullptr;
+        curl_easy_getinfo(data->curl, CURLINFO_CONTENT_TYPE, &mime);
+        int mimeKind = 4;
+        if (!mime || !*mime) mimeKind = 0;
+        else if (std::strstr(mime, "xml")) mimeKind = 1;
+        else if (std::strstr(mime, "html")) mimeKind = 2;
+        else if (std::strstr(mime, "octet-stream")) mimeKind = 3;
+        sphaira::open_diagnostics::download_status.store(status);
+        sphaira::open_diagnostics::download_redirect_count.store(redirects);
+        sphaira::open_diagnostics::download_mime_kind.store(mimeKind);
+        sphaira::open_diagnostics::download_seen.store(true);
         if ((status != 200 && status != 206) ||
             (data->require_partial_range &&
              (status != 206 || !data->range_header_valid))) {
@@ -1385,6 +1397,10 @@ PushThreadData* MountCurlDevice::CreatePushData(CURL* curl, const std::string& u
     }
 
     curl_set_common_options(curl, url);
+    // Always make the transfer an explicit GET, not a previous WebDAV
+    // PROPFIND or HEAD operation.
+    curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
+    sphaira::open_diagnostics::download_seen.store(false);
     data->expected_range_offset = offset;
     data->require_http_status =
         url.starts_with("https://") || url.starts_with("http://");

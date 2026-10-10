@@ -236,7 +236,22 @@ ErrorBox::ErrorBox(Result code, const std::string& message) : ErrorBox{message} 
         m_message += first;
         m_message += "\n";
         m_message += second;
-        m_message += "\nCheck the WebDAV file response";
+        if (sphaira::open_diagnostics::download_seen.load()) {
+            char http[96]{};
+            const int kind = sphaira::open_diagnostics::download_mime_kind.load();
+            const char* mime = kind == 1 ? "XML" :
+                kind == 2 ? "HTML" :
+                kind == 3 ? "BINARY" :
+                kind == 4 ? "OTHER" : "UNKNOWN";
+            std::snprintf(http, sizeof(http),
+                "GET HTTP=%ld, MIME=%s, redirects=%ld",
+                sphaira::open_diagnostics::download_status.load(), mime,
+                sphaira::open_diagnostics::download_redirect_count.load());
+            m_message += "\n";
+            m_message += http;
+        } else {
+            m_message += "\nNo HTTP transfer metadata captured";
+        }
     }
     if (code == Result_FsStdioFailedToOpenFile) {
         const int err = sphaira::open_diagnostics::file_errno.load();

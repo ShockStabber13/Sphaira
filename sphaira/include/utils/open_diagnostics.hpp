@@ -32,6 +32,11 @@ inline thread_local Attempt current{};
 // Never record URLs, paths, passwords, or entire response bodies.
 inline std::array<std::atomic<unsigned char>, 16> invalid_nsp_header{};
 inline std::atomic<bool> invalid_nsp_header_valid{false};
+// Capture only generic HTTP transfer metadata, never file URLs or tokens.
+inline std::atomic<long> download_status{0};
+inline std::atomic<long> download_redirect_count{0};
+inline std::atomic<int> download_mime_kind{0}; // 1 XML, 2 HTML, 3 octet, 4 other
+inline std::atomic<bool> download_seen{false};
 
 inline void CaptureInvalidNspHeader(const void* data, std::size_t len) {
     invalid_nsp_header_valid.store(false);
