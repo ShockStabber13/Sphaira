@@ -13,6 +13,10 @@
 
 namespace sphaira::devoptab::common {
 
+// The installer sets this only while opening its WebDAV file. The mounted
+// file copies the token, so reads on YATI's worker threads can be cancelled.
+extern thread_local std::stop_token file_open_cancel_token;
+
 // max entries per devoptab, should be enough.
 enum { MAX_ENTRIES = 4 };
 
@@ -205,7 +209,8 @@ struct MountCurlDevice : MountDevice {
     // An exclusive end of 0 retains the original open-ended HTTP behavior.
     PushThreadData* CreatePushData(CURL* curl, const std::string& url,
                                    size_t offset, bool require_range_from_start = false,
-                                   size_t range_end_exclusive = 0);
+                                   size_t range_end_exclusive = 0,
+                                   std::stop_token token = {});
     PullThreadData* CreatePullData(CURL* curl, const std::string& url, bool append = false);
 
     virtual bool Mount();
