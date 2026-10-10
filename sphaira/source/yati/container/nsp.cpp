@@ -43,7 +43,13 @@ Result ReadExact(source::Base* source, void* data, s64 offset, s64 size) {
 
     u64 bytes_read{};
     R_TRY(source->Read(data, offset, size, &bytes_read));
-    R_UNLESS(bytes_read == static_cast<u64>(size), Result_NspInvalidHeader);
+    if (bytes_read != static_cast<u64>(size)) {
+        sphaira::open_diagnostics::nsp_read_short.store(true);
+        sphaira::open_diagnostics::nsp_read_offset.store(static_cast<u64>(offset));
+        sphaira::open_diagnostics::nsp_read_expected.store(static_cast<u64>(size));
+        sphaira::open_diagnostics::nsp_read_received.store(bytes_read);
+        R_THROW(Result_NspInvalidHeader);
+    }
     R_SUCCEED();
 }
 
@@ -90,15 +96,26 @@ Result Nsp::GetCollections(Collections& out, s64 off) {
 }
 
 Result Nsp::GetCollections(Collections& out, s64 off, s64 container_size) {
+    namespace diag = sphaira::open_diagnostics;
+    diag::nsp_diag_valid.store(true);
+    diag::nsp_files.store(0);
+    diag::nsp_strings.store(0);
+    diag::nsp_file_index.store(0);
+    diag::nsp_read_short.store(false);
+    diag::nsp_stage.store(1); // start offset
     R_UNLESS(off >= 0, Result_NspInvalidHeader);
     u64 container_end{};
+    diag::nsp_stage.store(2); // container size and bounds
     if (container_size >= 0) {
         R_UNLESS(CheckedAdd(static_cast<u64>(off), static_cast<u64>(container_size), container_end), Result_NspInvalidHeader);
         R_UNLESS(container_end <= static_cast<u64>(std::numeric_limits<s64>::max()), Result_NspInvalidHeader);
     }
 
     Pfs0Header header{};
+    diag::nsp_stage.store(3); // first 16-byte header
     R_TRY(ReadExact(m_source, std::addressof(header), off, sizeof(header)));
+    diag::nsp_files.store(header.total_files);
+    diag::nsp_strings.store(header.string_table_size);
     if (header.magic != PFS0_MAGIC) {
         // Determine whether a WebDAV/HTTP endpoint served real NSP bytes
         // or a response document, without logging any URL or credentials.
@@ -106,13 +123,16 @@ Result Nsp::GetCollections(Collections& out, s64 off, s64 container_size) {
             std::addressof(header), sizeof(header));
         R_THROW(Result_NspBadMagic);
     }
+    diag::nsp_stage.store(4); // file count range
     R_UNLESS(header.total_files <= MAX_PFS0_FILES, Result_NspInvalidHeader);
+    diag::nsp_stage.store(5); // string table length
     R_UNLESS(header.string_table_size <= MAX_PFS0_STRING_TABLE_SIZE, Result_NspInvalidHeader);
 
     const auto table_size = static_cast<u64>(header.total_files) * sizeof(Pfs0FileTableEntry);
     u64 table_offset{};
     u64 strings_offset{};
     u64 data_offset{};
+    diag::nsp_stage.store(6); // partition offsets and bounds
     R_UNLESS(CheckedAdd(static_cast<u64>(off), sizeof(header), table_offset), Result_NspInvalidHeader);
     R_UNLESS(CheckedAdd(table_offset, table_size, strings_offset), Result_NspInvalidHeader);
     R_UNLESS(CheckedAdd(strings_offset, header.string_table_size, data_offset), Result_NspInvalidHeader);
@@ -121,21 +141,28 @@ Result Nsp::GetCollections(Collections& out, s64 off, s64 container_size) {
     m_data_offset = data_offset;
 
     std::vector<Pfs0FileTableEntry> file_table(header.total_files);
+    diag::nsp_stage.store(7); // file table bytes
     R_TRY(ReadExact(m_source, file_table.data(), table_offset, table_size));
 
     std::vector<char> string_table(header.string_table_size);
+    diag::nsp_stage.store(8); // string table bytes
     R_TRY(ReadExact(m_source, string_table.data(), strings_offset, string_table.size()));
 
     out.clear();
     out.reserve(header.total_files);
+    size_t file_index = 0;
     for (const auto& file : file_table) {
+        diag::nsp_file_index.store(file_index++);
+        diag::nsp_stage.store(9); // file name offset
         R_UNLESS(file.name_offset < string_table.size(), Result_NspInvalidHeader);
         const auto name = string_table.data() + file.name_offset;
         const auto name_size = string_table.size() - file.name_offset;
+        diag::nsp_stage.store(10); // null-terminated file name
         R_UNLESS(std::memchr(name, '\0', name_size), Result_NspInvalidHeader);
 
         u64 file_offset{};
         u64 file_end{};
+        diag::nsp_stage.store(11); // file size/offset math
         R_UNLESS(CheckedAdd(data_offset, file.data_offset, file_offset), Result_NspInvalidHeader);
         R_UNLESS(CheckedAdd(file_offset, file.data_size, file_end), Result_NspInvalidHeader);
         R_UNLESS(file_end <= static_cast<u64>(std::numeric_limits<s64>::max()), Result_NspInvalidHeader);
@@ -148,6 +175,7 @@ Result Nsp::GetCollections(Collections& out, s64 off, s64 container_size) {
         out.emplace_back(entry);
     }
 
+    diag::nsp_diag_valid.store(false);
     R_SUCCEED();
 }
 
