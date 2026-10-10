@@ -201,10 +201,11 @@ struct MountCurlDevice : MountDevice {
     using MountDevice::MountDevice;
     virtual ~MountCurlDevice();
 
-    // require_range_from_start forces Range: bytes=0- on initial WebDAV reads.
-    // Other HTTP mounts preserve their existing request behavior.
+    // WebDAV can require a bounded byte range even for the first download.
+    // An exclusive end of 0 retains the original open-ended HTTP behavior.
     PushThreadData* CreatePushData(CURL* curl, const std::string& url,
-                                   size_t offset, bool require_range_from_start = false);
+                                   size_t offset, bool require_range_from_start = false,
+                                   size_t range_end_exclusive = 0);
     PullThreadData* CreatePullData(CURL* curl, const std::string& url, bool append = false);
 
     virtual bool Mount();

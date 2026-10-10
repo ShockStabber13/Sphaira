@@ -72,6 +72,7 @@ struct File {
     common::PushPullThreadData* push_pull_thread_data;
     size_t off;
     size_t last_off;
+    size_t download_window_end; // exclusive end of active bounded HTTP request
     bool write_mode;
 };
 
@@ -520,45 +521,109 @@ int Device::devoptab_close(void *fd) {
 
 ssize_t Device::devoptab_read(void *fd, char *ptr, size_t len) {
     auto file = static_cast<File*>(fd);
-    sphaira::open_diagnostics::webdav_read_requested.store(len);
-    len = std::min(len, file->entry->st.st_size - file->off);
-    sphaira::open_diagnostics::webdav_read_allowed.store(len);
-
     if (file->write_mode) {
-        log_write("[WEBDAV] Attempt to read from a write-only file\n");
         return -EBADF;
     }
 
-    if (!len) {
+    // Unlike unbounded WebDAV GET, TorBox's bounded Range requests return
+    // the raw binary and an accurate Content-Range. Download 4 MiB windows,
+    // filling a read even when it crosses one or more window boundaries.
+    constexpr size_t window_size = 4 * 1024 * 1024;
+    constexpr unsigned max_reconnects = 3;
+    constexpr s64 reconnect_delay_ns = 500'000'000LL;
+    const size_t file_size =
+        static_cast<size_t>(std::max<off_t>(0, file->entry->st.st_size));
+    sphaira::open_diagnostics::webdav_read_requested.store(len);
+    if (file->off >= file_size) {
+        sphaira::open_diagnostics::webdav_read_allowed.store(0);
         return 0;
     }
+    len = std::min(len, file_size - file->off);
+    sphaira::open_diagnostics::webdav_read_allowed.store(len);
+    if (!len) return 0;
 
+    // A random seek cannot reuse the old stream's buffered bytes.
     if (file->off != file->last_off) {
-        log_write("[WEBDAV] File offset changed from %zu to %zu, resetting download thread\n", file->last_off, file->off);
-        file->last_off = file->off;
         delete file->push_pull_thread_data;
         file->push_pull_thread_data = nullptr;
+        file->download_window_end = 0;
+        file->last_off = file->off;
     }
 
-    if (!file->push_pull_thread_data) {
-        log_write("[WEBDAV] Creating download thread data for file: %s\n", file->entry->path.c_str());
-        // Force HTTP Range even at byte 0, matching the verified TorBox
-        // curl -r 0-15 request (HTTP 206 + correct file bytes). Reject
-        // the WebDAV HTML viewer's un-ranged HTTP 200 response.
-        file->push_pull_thread_data = CreatePushData(
-            this->transfer_curl, build_url(file->entry->path, false),
-            file->off, true);
+    size_t total = 0;
+    unsigned reconnects = 0;
+    while (total < len) {
+        // The previous bounded window has been fully consumed.
+        if (file->push_pull_thread_data &&
+            file->off >= file->download_window_end) {
+            delete file->push_pull_thread_data;
+            file->push_pull_thread_data = nullptr;
+        }
+
         if (!file->push_pull_thread_data) {
-            log_write("[WEBDAV] Failed to create download thread data for file: %s\n", file->entry->path.c_str());
+            file->download_window_end = file->off +
+                std::min(window_size, file_size - file->off);
+            log_write("[WEBDAV] Bounded range %zu-%zu\n",
+                file->off, file->download_window_end - 1);
+            file->push_pull_thread_data = CreatePushData(
+                this->transfer_curl,
+                build_url(file->entry->path, false),
+                file->off, true, file->download_window_end);
+            if (!file->push_pull_thread_data)
+                return -EIO;
+        }
+
+        // Never consume bytes beyond the requested window: the following
+        // bytes must be fetched by a fresh range request.
+        const size_t wanted = std::min(
+            len - total, file->download_window_end - file->off);
+        auto* transfer = file->push_pull_thread_data;
+        const size_t read_now = transfer->PullData(ptr + total, wanted);
+        total += read_now;
+        file->off += read_now;
+        file->last_off = file->off;
+
+        if (read_now == wanted) {
+            reconnects = 0;
+            continue;
+        }
+
+        // The stream ended before supplying the complete window.
+        // An HTTP 200 (HTML viewer) or malformed Content-Range is never
+        // treated as a successful file read.
+        const long http_status = transfer->code;
+        const CURLcode curl_rc = transfer->curl_result;
+        const bool rejected = transfer->rejected_response;
+        delete file->push_pull_thread_data;
+        file->push_pull_thread_data = nullptr;
+        file->download_window_end = 0;
+
+        if (http_status == 401 || http_status == 403) return -EACCES;
+        if (http_status == 404) return -ENOENT;
+        if (rejected || http_status != 206) {
+            log_write("[WEBDAV] Rejected bounded GET: HTTP %ld, CURL %d\n",
+                http_status, static_cast<int>(curl_rc));
             return -EIO;
         }
+
+        const bool recoverable = curl_rc == CURLE_OK ||
+            curl_rc == CURLE_PARTIAL_FILE ||
+            curl_rc == CURLE_RECV_ERROR ||
+            curl_rc == CURLE_OPERATION_TIMEDOUT ||
+            curl_rc == CURLE_COULDNT_CONNECT ||
+            curl_rc == CURLE_SEND_ERROR ||
+            curl_rc == CURLE_GOT_NOTHING ||
+            curl_rc == CURLE_SSL_CONNECT_ERROR;
+        if (!recoverable || reconnects >= max_reconnects) {
+            log_write("[WEBDAV] Range terminated at %zu after %u retries: CURL %d\n",
+                file->off, reconnects, static_cast<int>(curl_rc));
+            return -EIO;
+        }
+        ++reconnects;
+        svcSleepThread(reconnect_delay_ns);
     }
 
-    const auto ret = file->push_pull_thread_data->PullData(ptr, len);
-    file->off += ret;
-    file->last_off = file->off;
-
-    return ret;
+    return total;
 }
 
 ssize_t Device::devoptab_write(void *fd, const char *ptr, size_t len) {

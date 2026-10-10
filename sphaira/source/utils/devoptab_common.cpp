@@ -1405,7 +1405,8 @@ bool MountCurlDevice::Mount() {
 }
 
 PushThreadData* MountCurlDevice::CreatePushData(CURL* curl, const std::string& url,
-                                                size_t offset, bool require_range_from_start) {
+                                                size_t offset, bool require_range_from_start,
+                                                size_t range_end_exclusive) {
     auto data = new PushThreadData{curl};
     if (!data) {
         log_write("[PUSH:PULL] Failed to allocate PushThreadData\n");
@@ -1448,7 +1449,15 @@ PushThreadData* MountCurlDevice::CreatePushData(CURL* curl, const std::string& u
 
     if (offset > 0 || require_range_from_start) {
         char range[64];
-        std::snprintf(range, sizeof(range), "%zu-", offset);
+        if (range_end_exclusive > offset) {
+            // Inclusive end is mandatory: TorBox's WebDAV viewer can return
+            // HTTP 200 HTML for an open-ended "bytes=0-" request, but 206
+            // with actual file bytes for a bounded request.
+            std::snprintf(range, sizeof(range), "%zu-%zu",
+                          offset, range_end_exclusive - 1);
+        } else {
+            std::snprintf(range, sizeof(range), "%zu-", offset);
+        }
         log_write("[PUSH:PULL] Requesting range: %s\n", range);
         curl_easy_setopt(curl, CURLOPT_RANGE, range);
     }
