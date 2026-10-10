@@ -259,16 +259,15 @@ void ThreadData::WakeAllThreads() {
     condvarWakeAll(std::addressof(can_decompress_write));
     condvarWakeAll(std::addressof(can_pull));
     condvarWakeAll(std::addressof(can_pull_write));
-
-    mutexUnlock(std::addressof(read_mutex));
-    mutexUnlock(std::addressof(write_mutex));
-    mutexUnlock(std::addressof(pull_mutex));
+    // The owner of a mutex must release it. Unlocking another thread's
+    // mutex here corrupts synchronization and can hang cancellation.
 }
 
 Result ThreadData::SetDecompressBuf(std::vector<u8>& buf, s64 off, s64 size) {
     buf.resize(size);
 
     mutexLock(std::addressof(read_mutex));
+    ON_SCOPE_EXIT(mutexUnlock(std::addressof(read_mutex)));
     if (!read_buffers.ringbuf_free()) {
         if (!write_running) {
             R_SUCCEED();
@@ -276,7 +275,6 @@ Result ThreadData::SetDecompressBuf(std::vector<u8>& buf, s64 off, s64 size) {
         R_TRY(condvarWait(std::addressof(can_read), std::addressof(read_mutex)));
     }
 
-    ON_SCOPE_EXIT(mutexUnlock(std::addressof(read_mutex)));
     R_TRY(GetResults());
     read_buffers.ringbuf_push(buf, off);
     return condvarWakeOne(std::addressof(can_decompress));
@@ -284,6 +282,7 @@ Result ThreadData::SetDecompressBuf(std::vector<u8>& buf, s64 off, s64 size) {
 
 Result ThreadData::GetDecompressBuf(std::vector<u8>& buf_out, s64& off_out) {
     mutexLock(std::addressof(read_mutex));
+    ON_SCOPE_EXIT(mutexUnlock(std::addressof(read_mutex)));
     if (!read_buffers.ringbuf_size()) {
         if (!read_running) {
             buf_out.resize(0);
@@ -292,7 +291,6 @@ Result ThreadData::GetDecompressBuf(std::vector<u8>& buf_out, s64& off_out) {
         R_TRY(condvarWait(std::addressof(can_decompress), std::addressof(read_mutex)));
     }
 
-    ON_SCOPE_EXIT(mutexUnlock(std::addressof(read_mutex)));
     R_TRY(GetResults());
     read_buffers.ringbuf_pop(buf_out, off_out);
     return condvarWakeOne(std::addressof(can_read));
@@ -302,6 +300,7 @@ Result ThreadData::SetWriteBuf(std::vector<u8>& buf, s64 size) {
     buf.resize(size);
 
     mutexLock(std::addressof(write_mutex));
+    ON_SCOPE_EXIT(mutexUnlock(std::addressof(write_mutex)));
     if (!write_buffers.ringbuf_free()) {
         if (!decompress_running) {
             R_SUCCEED();
@@ -309,7 +308,6 @@ Result ThreadData::SetWriteBuf(std::vector<u8>& buf, s64 size) {
         R_TRY(condvarWait(std::addressof(can_decompress_write), std::addressof(write_mutex)));
     }
 
-    ON_SCOPE_EXIT(mutexUnlock(std::addressof(write_mutex)));
     R_TRY(GetResults());
     write_buffers.ringbuf_push(buf, 0);
     return condvarWakeOne(std::addressof(can_write));
@@ -317,6 +315,7 @@ Result ThreadData::SetWriteBuf(std::vector<u8>& buf, s64 size) {
 
 Result ThreadData::GetWriteBuf(std::vector<u8>& buf_out, s64& off_out) {
     mutexLock(std::addressof(write_mutex));
+    ON_SCOPE_EXIT(mutexUnlock(std::addressof(write_mutex)));
     if (!write_buffers.ringbuf_size()) {
         if (!decompress_running) {
             buf_out.resize(0);
@@ -325,7 +324,6 @@ Result ThreadData::GetWriteBuf(std::vector<u8>& buf_out, s64& off_out) {
         R_TRY(condvarWait(std::addressof(can_write), std::addressof(write_mutex)));
     }
 
-    ON_SCOPE_EXIT(mutexUnlock(std::addressof(write_mutex)));
     R_TRY(GetResults());
     write_buffers.ringbuf_pop(buf_out, off_out);
     return condvarWakeOne(std::addressof(can_decompress_write));
@@ -335,11 +333,11 @@ Result ThreadData::SetPullBuf(std::vector<u8>& buf, s64 size) {
     buf.resize(size);
 
     mutexLock(std::addressof(pull_mutex));
+    ON_SCOPE_EXIT(mutexUnlock(std::addressof(pull_mutex)));
     if (!pull_buffer.empty()) {
         R_TRY(condvarWait(std::addressof(can_pull_write), std::addressof(pull_mutex)));
     }
 
-    ON_SCOPE_EXIT(mutexUnlock(std::addressof(pull_mutex)));
     R_TRY(GetResults());
 
     pull_buffer.swap(buf);
@@ -348,11 +346,11 @@ Result ThreadData::SetPullBuf(std::vector<u8>& buf, s64 size) {
 
 Result ThreadData::GetPullBuf(void* data, s64 size, u64* bytes_read) {
     mutexLock(std::addressof(pull_mutex));
+    ON_SCOPE_EXIT(mutexUnlock(std::addressof(pull_mutex)));
     if (pull_buffer.empty()) {
         R_TRY(condvarWait(std::addressof(can_pull), std::addressof(pull_mutex)));
     }
 
-    ON_SCOPE_EXIT(mutexUnlock(std::addressof(pull_mutex)));
     R_TRY(GetResults());
 
     *bytes_read = size = std::min<s64>(size, pull_buffer.size() - pull_buffer_offset);
