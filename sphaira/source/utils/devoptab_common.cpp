@@ -1098,6 +1098,7 @@ size_t PushPullThreadData::response_header_callback(char* ptr, size_t size, size
     const std::string_view line{ptr, bytes};
     if (line.starts_with("HTTP/")) {
         data->range_header_valid = false;
+        sphaira::open_diagnostics::download_range_valid.store(false);
         return bytes;
     }
 
@@ -1128,6 +1129,8 @@ size_t PushPullThreadData::response_header_callback(char* ptr, size_t size, size
     }
     data->range_header_valid = digits > 0 && digits < value.size() &&
         value[digits] == '-' && start == data->expected_range_offset;
+    sphaira::open_diagnostics::download_range_valid.store(
+        data->range_header_valid);
     return bytes;
 }
 
@@ -1155,10 +1158,14 @@ size_t PushThreadData::push_thread_callback(const char *ptr, size_t size, size_t
              (status != 206 || !data->range_header_valid))) {
             // Abort before invalid HTTP data reaches the installer.
             data->rejected_response = true;
+            sphaira::open_diagnostics::download_rejected.store(true);
             return 0;
         }
     }
-    return data->PushData(ptr, size * nmemb, true);
+    const auto accepted = data->PushData(ptr, size * nmemb, true);
+    if (data->require_http_status && accepted == size * nmemb)
+        sphaira::open_diagnostics::download_payload_bytes.fetch_add(accepted);
+    return accepted;
 }
 
 size_t PullThreadData::pull_thread_callback(char *ptr, size_t size, size_t nmemb, void *userdata) {
@@ -1237,6 +1244,14 @@ void PushPullThreadData::thread_func(void* arg) {
     data->finished = true;
     data->error = res != CURLE_OK;
     data->curl_result = res;
+    if (data->require_http_status) {
+        sphaira::open_diagnostics::download_curl_result.store(
+            static_cast<int>(res));
+        sphaira::open_diagnostics::download_range_valid.store(
+            data->range_header_valid);
+        sphaira::open_diagnostics::download_rejected.store(
+            data->rejected_response);
+    }
     curl_easy_getinfo(data->curl, CURLINFO_RESPONSE_CODE, &data->code);
 
     log_write("[PUSH:PULL] Read thread finished, code: %ld, error: %d\n", data->code, data->error);
@@ -1402,6 +1417,10 @@ PushThreadData* MountCurlDevice::CreatePushData(CURL* curl, const std::string& u
     // PROPFIND or HEAD operation.
     curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
     sphaira::open_diagnostics::download_seen.store(false);
+    sphaira::open_diagnostics::download_curl_result.store(-1);
+    sphaira::open_diagnostics::download_range_valid.store(false);
+    sphaira::open_diagnostics::download_rejected.store(false);
+    sphaira::open_diagnostics::download_payload_bytes.store(0);
     data->expected_range_offset = offset;
     data->require_http_status =
         url.starts_with("https://") || url.starts_with("http://");

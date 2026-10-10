@@ -237,25 +237,41 @@ ErrorBox::ErrorBox(Result code, const std::string& message) : ErrorBox{message} 
         char line[140]{};
         std::snprintf(line, sizeof(line), "NSP check %d: %s", stage, stage_name);
         m_message = line;
-        std::snprintf(line, sizeof(line), "Files=%llu, Strings=%llu, Item=%llu",
-            static_cast<unsigned long long>(diag::nsp_files.load()),
-            static_cast<unsigned long long>(diag::nsp_strings.load()),
-            static_cast<unsigned long long>(diag::nsp_file_index.load()));
-        m_message += "\n";
-        m_message += line;
         if (diag::nsp_read_short.load()) {
-            std::snprintf(line, sizeof(line), "Read at %llu: expected %llu, got %llu",
+            std::snprintf(line, sizeof(line),
+                "At %llu: need %llu, got %llu",
                 static_cast<unsigned long long>(diag::nsp_read_offset.load()),
                 static_cast<unsigned long long>(diag::nsp_read_expected.load()),
                 static_cast<unsigned long long>(diag::nsp_read_received.load()));
             m_message += "\n";
             m_message += line;
+            std::snprintf(line, sizeof(line),
+                "WebDAV size=%llu, read allowed=%llu/%llu",
+                static_cast<unsigned long long>(diag::webdav_file_size.load()),
+                static_cast<unsigned long long>(diag::webdav_read_allowed.load()),
+                static_cast<unsigned long long>(diag::webdav_read_requested.load()));
+            m_message += "\n";
+            m_message += line;
+            std::snprintf(line, sizeof(line),
+                "HTTP=%ld curl=%d range=%d reject=%d bytes=%llu",
+                diag::download_status.load(),
+                diag::download_curl_result.load(),
+                static_cast<int>(diag::download_range_valid.load()),
+                static_cast<int>(diag::download_rejected.load()),
+                static_cast<unsigned long long>(diag::download_payload_bytes.load()));
         } else {
-            m_message += "\nHeader or table validation failed";
+            std::snprintf(line, sizeof(line), "Files=%llu Strings=%llu Item=%llu",
+                static_cast<unsigned long long>(diag::nsp_files.load()),
+                static_cast<unsigned long long>(diag::nsp_strings.load()),
+                static_cast<unsigned long long>(diag::nsp_file_index.load()));
+            m_message += "\n";
+            m_message += line;
+            std::snprintf(line, sizeof(line), "HTTP=%ld curl=%d range=%d reject=%d",
+                diag::download_status.load(),
+                diag::download_curl_result.load(),
+                static_cast<int>(diag::download_range_valid.load()),
+                static_cast<int>(diag::download_rejected.load()));
         }
-        std::snprintf(line, sizeof(line), "GET HTTP=%ld, redirects=%ld",
-            diag::download_status.load(),
-            diag::download_redirect_count.load());
         m_message += "\n";
         m_message += line;
     }

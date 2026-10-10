@@ -38,6 +38,14 @@ inline std::atomic<long> download_status{0};
 inline std::atomic<long> download_redirect_count{0};
 inline std::atomic<int> download_mime_kind{0}; // 1 XML, 2 HTML, 3 octet, 4 other
 inline std::atomic<bool> download_seen{false};
+// Streaming failure diagnostics: status alone cannot establish a successful read.
+inline std::atomic<int> download_curl_result{-1}; // -1 = still running / not started
+inline std::atomic<bool> download_range_valid{false};
+inline std::atomic<bool> download_rejected{false};
+inline std::atomic<std::uint64_t> download_payload_bytes{0};
+inline std::atomic<std::uint64_t> webdav_file_size{0};
+inline std::atomic<std::uint64_t> webdav_read_requested{0};
+inline std::atomic<std::uint64_t> webdav_read_allowed{0};
 
 // Metadata-only NSP parser diagnostics, captured without paths or payload.
 // The stage is a numbered validation or read operation (see nsp.cpp).

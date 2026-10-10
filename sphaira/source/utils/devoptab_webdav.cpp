@@ -500,6 +500,8 @@ int Device::devoptab_open(void *fileStruct, const char *path, int flags, int mod
         }
     }
 
+    sphaira::open_diagnostics::webdav_file_size.store(
+        st.st_size > 0 ? static_cast<u64>(st.st_size) : 0);
     log_write("[WEBDAV] Opening file: %s\n", path);
     file->entry = new FileEntry{path, st};
     file->write_mode = (flags & (O_WRONLY | O_RDWR));
@@ -518,7 +520,9 @@ int Device::devoptab_close(void *fd) {
 
 ssize_t Device::devoptab_read(void *fd, char *ptr, size_t len) {
     auto file = static_cast<File*>(fd);
+    sphaira::open_diagnostics::webdav_read_requested.store(len);
     len = std::min(len, file->entry->st.st_size - file->off);
+    sphaira::open_diagnostics::webdav_read_allowed.store(len);
 
     if (file->write_mode) {
         log_write("[WEBDAV] Attempt to read from a write-only file\n");
