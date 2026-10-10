@@ -4,6 +4,7 @@
 // No filenames, URLs or credentials are recorded.
 #include <atomic>
 #include <array>
+#include <cstdint>
 #include <string>
 
 namespace sphaira::open_diagnostics {
@@ -37,6 +38,18 @@ inline std::atomic<long> download_status{0};
 inline std::atomic<long> download_redirect_count{0};
 inline std::atomic<int> download_mime_kind{0}; // 1 XML, 2 HTML, 3 octet, 4 other
 inline std::atomic<bool> download_seen{false};
+
+// Metadata-only NSP parser diagnostics, captured without paths or payload.
+// The stage is a numbered validation or read operation (see nsp.cpp).
+inline std::atomic<bool> nsp_diag_valid{false};
+inline std::atomic<int> nsp_stage{0};
+inline std::atomic<std::uint64_t> nsp_files{0};
+inline std::atomic<std::uint64_t> nsp_strings{0};
+inline std::atomic<std::uint64_t> nsp_file_index{0};
+inline std::atomic<std::uint64_t> nsp_read_offset{0};
+inline std::atomic<std::uint64_t> nsp_read_expected{0};
+inline std::atomic<std::uint64_t> nsp_read_received{0};
+inline std::atomic<bool> nsp_read_short{false};
 
 inline void CaptureInvalidNspHeader(const void* data, std::size_t len) {
     invalid_nsp_header_valid.store(false);
