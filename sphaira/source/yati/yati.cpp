@@ -1567,14 +1567,16 @@ Result InstallInternalStream(ui::ProgressBox* pbox, source::Base* source, contai
 } // namespace
 
 Result InstallFromFile(ui::ProgressBox* pbox, fs::Fs* fs, const fs::FsPath& path, const ConfigOverride& override) {
-    auto source = std::make_unique<source::File>(fs, path);
+    auto source = std::make_unique<source::File>(fs, path, pbox->GetStopToken());
     R_TRY(source->GetOpenResult());
     s64 source_size{-1};
     if (R_FAILED(source->GetSize(&source_size))) {
         source_size = -1;
     }
     // auto source = std::make_unique<source::StreamFile>(fs, path, override); // enable for testing.
-    return InstallFromSource(pbox, source.get(), path, override, source_size);
+    const auto rc = InstallFromSource(pbox, source.get(), path, override, source_size);
+    R_UNLESS(!pbox->ShouldExit(), Result_TransferCancelled);
+    return rc;
 }
 
 Result InstallFromSource(ui::ProgressBox* pbox, source::Base* source, const fs::FsPath& path, const ConfigOverride& override, s64 source_size) {
